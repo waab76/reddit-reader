@@ -85,6 +85,11 @@ def test_continuation_marker_is_stripped() -> None:
     assert parse_title("The Long Road (cont.)").base_title == "the long road"
 
 
+def test_continuation_marker_does_not_leak_into_tags() -> None:
+    parsed = parse_title("The Long Road (cont.)")
+    assert parsed.tags == []
+
+
 def test_title_with_no_marker_yields_no_number() -> None:
     parsed = parse_title("The Long Road")
     assert parsed.part_number is None

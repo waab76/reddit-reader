@@ -134,12 +134,12 @@ def parse_title(raw: str) -> ParsedTitle:
             part_label = named_match.group(0).strip().rstrip(":").strip()
             working = working[: named_match.start()] + " " + working[named_match.end() :]
 
+    working = _CONT_RE.sub(" ", working)
+
     tags: list[str] = []
     for tag_match in _TAG_RE.finditer(working):
         tags.append(tag_match.group(1).strip())
     working = _TAG_RE.sub(" ", working)
-
-    working = _CONT_RE.sub(" ", working)
 
     return ParsedTitle(
         base_title=_normalize(working),
