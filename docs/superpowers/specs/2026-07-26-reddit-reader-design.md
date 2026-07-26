@@ -69,6 +69,10 @@ unbounded local storage growth from every post ever seen while browsing.
 - **`UnavailablePart`** — a part number recorded as unfillable for a story (`story_id`,
   `part_number`, whether it was auto-marked by a failed search or set by hand), so dead
   gaps stop being reported.
+- **`CleaningRule`** — a per-story header/footer block learned by cross-part repetition
+  (`story_id`, position (leading/trailing), the matched block, the part count it was
+  seen in, and your approve/reject decision), so a confirmed rule applies on every
+  future render and a rejected one isn't re-proposed.
 - **`Story`** — `id`, `series_key` (shared across volumes of one serial), `title`
   (normalized base title), `volume` (nullable — Book/Season/Arc number when present),
   `author`, `tracked` (bool — gates body caching), `last_read_part` (a `StoryPart`
@@ -293,7 +297,9 @@ links export can note that its permalink is dead.
 - **Story Detail** — a selected story: part list with any missing parts called out
   explicitly; "select/track" action (triggers eager `PostBody` fetch for all known
   parts); "find missing parts" action (author-history expansion, enabled only when
-  gaps are detected); export actions.
+  gaps are detected); export actions. When cross-part detection finds a candidate
+  header/footer block, it's previewed here for one-time approval before it affects
+  reading or export.
 - **Reader** — renders a tracked story's parts in order with a `## Part N` boundary
   notation between parts; resumes from your saved position by default, with a manual
   jump to any part (e.g. to read only newly added installments).
@@ -310,7 +316,8 @@ option (not just credentials): **CLI flags > config file > environment variables
   mechanism) to use.
 - **App config file** — e.g. `~/.config/reddit-reader/config.toml` (or `--config path`)
   for defaults: subreddits, database path, export directory, praw profile name, cleaning
-  toggle, stale-story threshold, auto-attach confidence threshold, etc.
+  toggle, learned-boilerplate thresholds (line-window size, majority fraction, minimum
+  part count), stale-story threshold, auto-attach confidence threshold, etc.
 - **Subreddits** — a list, not a scalar. Repeatable CLI flag / list in the config file /
   comma-separated env var. List order also sets canonical-copy priority for duplicate
   collapsing. Each subreddit carries its own fetch state, so refreshing one doesn't
@@ -375,14 +382,45 @@ Serial posts carry recurring cruft that is useful on Reddit and noise in an asse
 plugs, and "hope you enjoyed, comments welcome" sign-offs. Exported verbatim, that's 90
 copies of each.
 
-`cleaning.py` strips these by pattern before text reaches the reader or an export:
+`cleaning.py` removes these before text reaches the reader or an export, using two
+complementary mechanisms.
+
+### Pattern-based stripping
+
+Universally common cruft, matched by regex:
 
 - navigation link blocks (`First`/`Prev`/`Previous`/`Next` link clusters),
 - known external-support link plugs (Patreon, RoyalRoad, Ko-fi, and similar).
 
-The **raw body is always stored untouched** in `PostBody`; cleaning is applied on
-render, so the patterns can be improved later without re-fetching anything. Stripping is
-toggleable in config for when you'd rather see the post as written.
+### Learned header/footer detection
+
+Authors also have their own habits — a standing preamble, a recurring sign-off, a
+word-count line — that no fixed pattern list will anticipate. These are found by
+**cross-part repetition** instead: within one story, boilerplate is by definition the
+text that repeats at the same position across parts.
+
+The detection runs per story, over its cached bodies:
+
+1. Take the leading and trailing runs of lines from each part (a bounded window, not the
+   whole body).
+2. Compare them across parts using fuzzy line matching, so a header that embeds the
+   chapter number or date still matches its counterparts.
+3. Find the longest leading block, and the longest trailing block, present in at least a
+   configurable majority of parts.
+4. Stories with too few parts are skipped — repetition means nothing across two samples.
+
+Because an author whose chapters genuinely open in a similar voice could get real prose
+caught, this **never strips silently**. The detected blocks are shown as a preview, with
+the count of parts they appear in, and you approve or reject them once per story; the
+decision is stored and reused. Rejected suggestions are not re-proposed unless the story
+gains enough new parts to change the result.
+
+### Reversibility
+
+The **raw body is always stored untouched** in `PostBody`. All cleaning — pattern-based
+and learned — is applied at render time, so patterns can improve, thresholds can change,
+and approvals can be revoked without re-fetching anything. Cleaning is toggleable in
+config for when you'd rather read the post exactly as written.
 
 ## Export
 
@@ -443,7 +481,10 @@ Deletions prompt for confirmation and report what was removed.
 - Auto-attach is tested at the threshold boundary: a high-confidence new part joins a
   committed story without prompting, a low-confidence one is routed to curation instead.
 - `cleaning.py` is tested to strip nav blocks and known plugs while leaving story prose
-  untouched, and to leave the stored raw body unmodified.
+  untouched, and to leave the stored raw body unmodified. Learned header/footer
+  detection gets fixtures of several parts sharing a preamble and sign-off: it should
+  find both blocks, match headers that vary by chapter number, decline to propose
+  anything for a story with too few parts, and respect a stored reject decision.
 - `storage.py` is tested against a real temporary SQLite file (fast; no need to mock
   SQLite itself).
 - TUI screens get lighter smoke-test coverage via Textual's built-in test harness
