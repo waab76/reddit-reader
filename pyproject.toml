@@ -40,7 +40,7 @@ strict = true
 warn_unreachable = true
 
 [[tool.mypy.overrides]]
-module = ["praw.*", "prawcore.*", "text2num.*"]
+module = ["praw.*", "prawcore.*", "text_to_num.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
