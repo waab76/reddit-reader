@@ -130,7 +130,7 @@ line-length = 100
 target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF"]
+select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF", "A", "BLE"]
 
 [tool.mypy]
 python_version = "3.12"
@@ -2691,7 +2691,7 @@ def group_posts(
         buckets.setdefault(key, []).append((post, parsed))
 
     matches: list[DetectionMatch] = []
-    for (author_key, base_title, volume), items in buckets.items():
+    for (_author_key, base_title, volume), items in buckets.items():
         ordered = resolve_order(items)
         group_posts_list = [part.post for part in ordered]
         group_parsed = [part.parsed for part in ordered]
@@ -2722,8 +2722,6 @@ def group_posts(
 
     return matches
 ```
-
-Note `author_key` is unused in the loop body — remove it by unpacking with `_` if ruff flags it.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
