@@ -83,11 +83,9 @@ unbounded local storage growth from every post ever seen while browsing.
   `exported_markdown_path` (nullable),
   `exported_at` (nullable), `last_updated_at`. Status (complete / ongoing / stale) and
   unread counts are derived, not stored.
-- **`DetectionMatch`** — transient candidate grouping + confidence + reasoning. A match
-  proposing a **new series** always goes through curation. A high-confidence match
-  against an **already-committed** story auto-attaches without a prompt (see *Attaching
-  new parts to existing stories*) — that is the one case that bypasses review, and it
-  only ever adds a part to a story you already accepted.
+- **`DetectionMatch`** — transient candidate grouping + confidence + reasoning, never
+  persisted. Whether it reaches curation or attaches directly is decided by
+  *Attaching new parts to existing stories*.
 
 ### Search index
 
@@ -117,8 +115,8 @@ Given a batch of `PostMeta` from a fetch:
      `volume` (see *Volumes, books, and numbering resets* below) and stripped from the
      base title.
    - Topic/genre bracket tags that aren't part-number patterns (e.g. `[Sci-Fi]`,
-     `[OC]`, `[Completed]`) are stripped from the base title used for grouping, but
-     remain in the raw stored/searched title untouched.
+     `[OC]`, `[Completed]`) — stripped so they don't distort title similarity, while
+     staying searchable in the raw title.
 2. **Part number extraction** — pulled from the same markers matched above, resolving
    three real-world complications:
 
@@ -420,20 +418,18 @@ and the raw date is what an experienced reader actually judges by.
 
 ## Boilerplate Cleaning
 
-Serial posts carry recurring cruft that is useful on Reddit and noise in an assembled
-90-chapter file: `[First] [Prev] [Next]` navigation blocks, Patreon/RoyalRoad/Ko-fi
-plugs, and "hope you enjoyed, comments welcome" sign-offs. Exported verbatim, that's 90
-copies of each.
-
-`cleaning.py` removes these before text reaches the reader or an export, using two
-complementary mechanisms.
+Serial posts carry recurring cruft that is useful on Reddit and pure noise in an
+assembled 90-chapter file — exported verbatim, you get 90 copies of it. `cleaning.py`
+removes it before text reaches the reader or an export, using two complementary
+mechanisms.
 
 ### Pattern-based stripping
 
-Universally common cruft, matched by regex:
+Cruft common to everyone, matched by regex:
 
 - navigation link blocks (`First`/`Prev`/`Previous`/`Next` link clusters),
-- known external-support link plugs (Patreon, RoyalRoad, Ko-fi, and similar).
+- known external-support plugs (Patreon, RoyalRoad, Ko-fi, and similar),
+- generic sign-offs ("hope you enjoyed", "comments welcome").
 
 ### Learned header/footer detection
 
