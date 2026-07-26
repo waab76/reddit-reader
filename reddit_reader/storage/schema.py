@@ -78,6 +78,12 @@ CREATE TABLE IF NOT EXISTS fetch_state (
     last_fetched TEXT,
     newest_seen  TEXT
 );
+
+CREATE VIRTUAL TABLE IF NOT EXISTS post_search USING fts5 (
+    post_id UNINDEXED,
+    title,
+    body
+);
 """
 
 
