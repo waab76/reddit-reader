@@ -66,7 +66,8 @@ unbounded local storage growth from every post ever seen while browsing.
   text, e.g. `Interlude`, for display), `segment` / `segment_count` (nullable — set when
   one part is split across posts by Reddit's character limit), `sort_key` (resolved
   ordering position), `alternate_post_ids` (mirrored/crossposted copies collapsed into
-  this part), `match_confidence`.
+  this part), `newly_filled` (bool — set when the part was backfilled behind the current
+  read position, cleared once opened), `match_confidence`.
 - **`UnavailablePart`** — a part number recorded as unfillable for a story (`story_id`,
   `part_number`, whether it was auto-marked by a failed search or set by hand), so dead
   gaps stop being reported.
@@ -96,6 +97,10 @@ token-matchable — no separate tag extraction needed). Body text is additionall
 only for posts with a `PostBody` row (i.e. tracked stories), so deeper body-text search
 naturally covers stories you already care about without forcing eager body storage for
 everything else.
+
+The index follows body lifecycle in both directions: body text is added when a story is
+tracked, and removed when untracking or deletion drops the `PostBody` rows, so search
+never returns hits for text no longer held.
 
 ## Detection Algorithm
 
@@ -134,6 +139,13 @@ Given a batch of `PostMeta` from a fetch:
    candidate `DetectionMatch`. Author match is required, not just a confidence booster —
    it sharply cuts false-positive grouping between unrelated authors with similar
    titles.
+
+   **`[deleted]` is not an author.** A deleted account reports as `[deleted]` on every
+   one of its posts, and abandoned serials are exactly the ones whose authors delete
+   accounts — so treating it as a normal author key would let unrelated stories share
+   one, and would poison `series_key`. A `[deleted]` author never satisfies the
+   author-match requirement; those posts group on the remaining signals and go to
+   curation for a human call.
 4. **Confidence score** — combination of title-similarity ratio (e.g.
    `difflib.SequenceMatcher` over normalized base titles), whether part numbers form a
    clean ascending sequence, and time spacing between posts (serials post at roughly
@@ -202,6 +214,11 @@ Reddit post ids, and uses the resulting chain to:
 Links pointing at posts not in the cache are fetched as `PostMeta` and presented as
 candidates; they are never silently added.
 
+The pass runs automatically when a story is first tracked (its bodies have just been
+fetched) and again whenever new parts attach to it. Since it works entirely on locally
+cached text, running it eagerly costs nothing but CPU — and anything it turns up still
+goes through curation rather than being applied directly.
+
 ### Attaching new parts to existing stories
 
 Curation is for discovering **new series**, not for re-approving every new chapter of a
@@ -222,9 +239,16 @@ So detection runs against committed stories first:
    brand-new series candidate.
 4. Posts matching no committed story follow the normal new-series curation flow.
 
-**Unread state is derived, never stored.** A story has unread parts when any part orders
-after `last_read_part`; the count shown in Story List is computed from the same ordering
-the reader uses. There is no per-part read flag to keep in sync.
+**Unread state is derived for the normal forward case.** A story has unread parts when
+any part orders after `last_read_part`; the count shown in Story List is computed from
+the same ordering the reader uses. No per-part read flag is needed for this.
+
+Backfill is the exception. A part recovered by "find missing parts" lands *behind* your
+read position — fill part 4 into a story you've read to part 30 and the derived rule
+will never call it unread, so you'd have no idea it arrived. Parts added behind
+`last_read_part` therefore carry a **newly-filled** flag, surfaced in Story List and
+Story Detail and cleared once you open the part. This is the only per-part read state,
+and it exists because deriving it is impossible.
 
 ### Gap detection
 
@@ -278,8 +302,13 @@ the post resurfaced.
 
 Separately, a part **already cached** in a tracked story that later disappears from
 Reddit keeps its locally cached body — that is precisely what the cache is for, and the
-part stays readable and exportable. It is flagged as no longer available upstream so the
-links export can note that its permalink is dead.
+part stays readable and exportable. Its `available` flag is cleared so the links export
+can note that the permalink is dead.
+
+Availability is updated **opportunistically**, whenever a refresh, body fetch, or
+author-history pull happens to touch a post and finds it gone. There is no dedicated
+liveness scan: sweeping every cached permalink would burn API budget re-confirming what
+the cache already holds.
 
 ## TUI Screens & Flow
 
@@ -296,12 +325,14 @@ links export can note that its permalink is dead.
 - **Detected Series (curation)** — list of `DetectionMatch` candidates with confidence
   scores; actions to accept (commit as `Story`), merge two candidates, split a bad
   grouping, drop a false match, or manually reorder parts.
-- **Story List** — tracked `Story` records: title, author, part count, last-read
-  position, whether new parts are available since last fetch, and a gap indicator for
-  stories with missing parts. Volumes of one serial are grouped by `series_key`.
-  Discovery controls: **sort** by score, part count, or recency of newest part;
-  **filter** by read state (unstarted / in progress / has unread parts) and by
-  completion status (complete / ongoing / stale).
+- **Story List** — every committed `Story`, tracked or not, with tracked state shown and
+  filterable; this is what gives an untracked story a route to Story Detail (where it
+  can be tracked) and what makes the "unstarted" read-state filter meaningful. Columns:
+  title, author, part count, tracked state, last-read position, unread/newly-filled
+  indicators, and a gap indicator for stories with missing parts. Volumes of one serial
+  are grouped by `series_key`. Discovery controls: **sort** by score, part count, or
+  recency of newest part; **filter** by tracked state, read state (unstarted / in
+  progress / has unread parts), and completion status (complete / ongoing / stale).
 - **Story Detail** — a selected story: part list with any missing parts called out
   explicitly; "select/track" action (triggers eager `PostBody` fetch for all known
   parts); "find missing parts" action (author-history expansion, enabled only when
@@ -339,7 +370,10 @@ option (not just credentials): **CLI flags > config file > environment variables
 - **CLI (`cli.py`, built with `typer`)** subcommands:
   - `reddit-reader tui` — launch the interactive app (default if no subcommand given).
   - `reddit-reader fetch` — one-shot fetch into the cache without opening the TUI.
-  - `reddit-reader export <story-id>` — one-shot export outside the TUI.
+  - `reddit-reader list` — print committed stories with their ids, part counts, and
+    status, so the other subcommands have something to reference.
+  - `reddit-reader export <story>` — one-shot export outside the TUI, accepting either a
+    story id or a readable `author/title` slug.
 - All options resolve once at startup into a single `Settings` pydantic model, passed
   down to the rest of the app.
 
@@ -455,8 +489,10 @@ Cached bodies accumulate, and mis-curated stories need a way out. Available acti
 - **Untrack** — stop tracking a story and delete its cached `PostBody` rows to reclaim
   space, while keeping the `Story` record, its parts, and your read position, so
   returning to it later costs one re-fetch rather than re-curation.
-- **Delete story** — remove a `Story` and its `StoryPart` rows entirely, for groupings
-  that were wrong or are no longer wanted.
+- **Delete story** — remove a `Story` with its `StoryPart`, `PostBody`, `UnavailablePart`
+  and `CleaningRule` rows, for groupings that were wrong or are no longer wanted. The
+  underlying `PostMeta` survives as ordinary cached metadata, so the posts can be
+  re-detected and grouped differently rather than vanishing from the app.
 - **Prune orphaned metadata** — a maintenance action clearing cached `PostMeta` that
   belongs to no story (the residue of browsing and live searches).
 - **Storage usage** — report disk used by the cache, overall and per story, so it's
@@ -491,7 +527,13 @@ Deletions prompt for confirmation and report what was removed.
   manual mirrors caught by the author/title/number/time-window heuristic — including
   that canonical selection follows configured subreddit priority.
 - Auto-attach is tested at the threshold boundary: a high-confidence new part joins a
-  committed story without prompting, a low-confidence one is routed to curation instead.
+  committed story without prompting, a low-confidence one is routed to curation instead,
+  and a `Book Two, Chapter 1` post does not attach to the Book One story.
+- Read state is tested in both directions: a part appended after the read position
+  counts as unread by derivation, and a part backfilled *behind* it is flagged
+  `newly_filled` rather than silently ignored.
+- Grouping is tested to refuse author-matching on `[deleted]`, so two unrelated
+  abandoned serials never merge.
 - `cleaning.py` is tested to strip nav blocks and known plugs while leaving story prose
   untouched, and to leave the stored raw body unmodified. Learned header/footer
   detection gets fixtures of several parts sharing a preamble and sign-off: it should
