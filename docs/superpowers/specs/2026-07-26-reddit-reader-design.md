@@ -91,15 +91,18 @@ everything else.
 
 ## Detection Algorithm
 
-Given a batch of `PostMeta` from a subreddit fetch:
+Given a batch of `PostMeta` from a fetch:
 
 1. **Title normalization** — strip series markers to produce a "base title" used only
    for grouping comparisons (the stored raw title is never mutated):
-   - Numeric part markers: `Part N`, `[N/M]`, `(N/M)`, roman numerals (`Part IV`),
-     `cont.`/`continued`.
+   - Numeric part markers: `Part N`, `Chapter N`, `[N/M]`, `(N/M)`, roman numerals
+     (`Part IV`), `cont.`/`continued`.
    - Spelled-out chapter numbers: `Chapter One`, `Chapter Eighty Six` — matched via a
-     "Chapter/Part <word-number>" regex, converted to an integer using the `text2num`
-     library (handles compound number words correctly).
+     "Chapter/Part <word-number>" regex and converted with the `text2num` library
+     (handles compound number words correctly).
+   - Volume markers: `Book Two`, `Volume 3`, `Season 2`, `Arc 4` — extracted into
+     `volume` (see *Volumes, books, and numbering resets* below) and stripped from the
+     base title.
    - Topic/genre bracket tags that aren't part-number patterns (e.g. `[Sci-Fi]`,
      `[OC]`, `[Completed]`) are stripped from the base title used for grouping, but
      remain in the raw stored/searched title untouched.
@@ -107,10 +110,11 @@ Given a batch of `PostMeta` from a subreddit fetch:
    three real-world complications:
 
    - **Two numbers in one title.** `Chapter 12 (2/2)` is one chapter split across posts
-     to fit Reddit's per-post character limit — not chapter 2. The chapter/part marker
-     always wins for `part_number`; the `(N/M)` is captured separately as
-     `segment` / `segment_count`. Segments of the same part are concatenated in
-     segment order and presented as a single continuous part in the reader and export.
+     to fit Reddit's per-post character limit — not chapter 2. The disambiguation rule:
+     an `(N/M)` or `[N/M]` group is a **segment** marker when the title *also* carries a
+     chapter/part marker, and is the **part number** itself when it is the only number
+     present (`The Long Road [3/10]` is part 3). Segments of one part are concatenated
+     in segment order and presented as a single continuous part in reader and export.
    - **Non-integer parts.** `Part 4.5`, `Interlude`, `Prologue`, `Epilogue`,
      `Side Story: Kevin`. Ordering therefore uses a **sort key**, not a bare int:
      decimals sort naturally (4.5 between 4 and 5), and named parts anchor by
@@ -118,9 +122,10 @@ Given a batch of `PostMeta` from a subreddit fetch:
      in gap detection.
    - **No extractable marker** — `part_number` stays `None` and the part is positioned
      by timestamp.
-3. **Grouping** — posts with the same (normalized base title, author) form a candidate
-   `DetectionMatch`. Author match is required, not just a confidence booster — it
-   sharply cuts false-positive grouping between unrelated authors with similar titles.
+3. **Grouping** — posts with the same (normalized base title, author, volume) form a
+   candidate `DetectionMatch`. Author match is required, not just a confidence booster —
+   it sharply cuts false-positive grouping between unrelated authors with similar
+   titles.
 4. **Confidence score** — combination of title-similarity ratio (e.g.
    `difflib.SequenceMatcher` over normalized base titles), whether part numbers form a
    clean ascending sequence, and time spacing between posts (serials post at roughly
@@ -155,11 +160,12 @@ Long serials restart numbering: `Book Two, Chapter 1` arrives after a 50-chapter
 One. Kept in one story, that produces duplicate part numbers, broken ordering, and gap
 detection screaming that chapters 2-50 went missing the moment Book Two started.
 
-**Each volume becomes its own `Story`.** Book/Volume/Season/Arc markers are parsed out
-of the title during normalization, and posts sharing a base title but differing in
+**Each volume becomes its own `Story`.** The volume marker parsed out in normalization
+step 1 is part of the grouping key, so posts sharing a base title but differing in
 volume are committed as separate `Story` records carrying the same `series_key` (derived
-from the base title + author). Within a story, numbering is contiguous again, so
-ordering and gap detection work unmodified.
+from base title + author). Within a story, numbering is contiguous again, so ordering
+and gap detection work unmodified. A serial with no volume markers is simply one story
+with `volume = None`.
 
 The `series_key` keeps the volumes visibly related: Story List groups stories of one
 series together, and Story Detail links to the sibling volumes so moving from the end of
