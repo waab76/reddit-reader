@@ -25,6 +25,7 @@ reddit_reader/
   reddit_client.py# PRAW wrapper — subreddit listing fetch, live search, author submission history
   storage.py      # sqlite3 + pydantic — post/story cache, curation state, FTS5 full-text index
   detection.py    # series-detection heuristics, gap detection, gap-driven author-history expansion
+  cleaning.py     # boilerplate stripping (nav links, plugs) — shared by reader and export
   export.py       # Markdown story export + links-file export
   tui/            # Textual app: browse, search, series list, reader, curation, "find missing parts" action
   cli.py          # entry point — parses config, launches TUI or runs one-shot commands
@@ -47,10 +48,15 @@ unbounded local storage growth from every post ever seen in a subreddit.
   **tracked** `Story`. Fetched in one eager batch (all currently-known parts at once)
   when you select/track a story, and again for any newly discovered parts.
 - **`StoryPart`** — links a `PostMeta` to a `Story`: `post_id` (FK), `story_id` (FK),
-  `part_number` (nullable — some posts have no extractable number), `match_confidence`.
-- **`Story`** — `id`, `title` (normalized base title), `author`, `tracked` (bool — gates
-  body caching), `last_read_part`, `exported_markdown_path` (nullable), `exported_at`
-  (nullable), `last_updated_at`.
+  `part_number` (nullable `Decimal` — supports `4.5`; `None` for named parts like
+  `Interlude` and for posts with no extractable marker), `part_label` (the raw marker
+  text, e.g. `Interlude`, for display), `segment` / `segment_count` (nullable — set when
+  one part is split across posts by Reddit's character limit), `sort_key` (resolved
+  ordering position), `match_confidence`.
+- **`Story`** — `id`, `series_key` (shared across volumes of one serial), `title`
+  (normalized base title), `volume` (nullable — Book/Season/Arc number when present),
+  `author`, `tracked` (bool — gates body caching), `last_read_part`,
+  `exported_markdown_path` (nullable), `exported_at` (nullable), `last_updated_at`.
 - **`DetectionMatch`** — transient candidate grouping + confidence + reasoning, shown
   during curation before becoming a real `Story`/`StoryPart` pair. Never auto-committed.
 
@@ -77,8 +83,21 @@ Given a batch of `PostMeta` from a subreddit fetch:
    - Topic/genre bracket tags that aren't part-number patterns (e.g. `[Sci-Fi]`,
      `[OC]`, `[Completed]`) are stripped from the base title used for grouping, but
      remain in the raw stored/searched title untouched.
-2. **Part number extraction** — pulled from the same markers matched above. Posts with
-   no extractable number keep `part_number = None`.
+2. **Part number extraction** — pulled from the same markers matched above, resolving
+   three real-world complications:
+
+   - **Two numbers in one title.** `Chapter 12 (2/2)` is one chapter split across posts
+     to fit Reddit's per-post character limit — not chapter 2. The chapter/part marker
+     always wins for `part_number`; the `(N/M)` is captured separately as
+     `segment` / `segment_count`. Segments of the same part are concatenated in
+     segment order and presented as a single continuous part in the reader and export.
+   - **Non-integer parts.** `Part 4.5`, `Interlude`, `Prologue`, `Epilogue`,
+     `Side Story: Kevin`. Ordering therefore uses a **sort key**, not a bare int:
+     decimals sort naturally (4.5 between 4 and 5), and named parts anchor by
+     `created_utc` relative to their numbered neighbors. Only whole numbers participate
+     in gap detection.
+   - **No extractable marker** — `part_number` stays `None` and the part is positioned
+     by timestamp.
 3. **Grouping** — posts with the same (normalized base title, author) form a candidate
    `DetectionMatch`. Author match is required, not just a confidence booster — it
    sharply cuts false-positive grouping between unrelated authors with similar titles.
@@ -86,11 +105,71 @@ Given a batch of `PostMeta` from a subreddit fetch:
    `difflib.SequenceMatcher` over normalized base titles), whether part numbers form a
    clean ascending sequence, and time spacing between posts (serials post at roughly
    regular intervals; large gaps lower confidence).
-5. **Ordering** — parts ordered by `part_number` when available; posts lacking a number
-   are slotted by `created_utc` relative to numbered neighbors.
+5. **Ordering** — parts ordered by the sort key described above (whole numbers,
+   decimals, then named parts anchored by `created_utc` relative to numbered
+   neighbors); multi-segment parts are concatenated in segment order.
 6. **Output** — a list of `DetectionMatch` candidates, always reviewed in the curation
    screen (merge, split, drop, reorder) before becoming committed `Story`/`StoryPart`
    records.
+
+### Volumes, books, and numbering resets
+
+Long serials restart numbering: `Book Two, Chapter 1` arrives after a 50-chapter Book
+One. Kept in one story, that produces duplicate part numbers, broken ordering, and gap
+detection screaming that chapters 2-50 went missing the moment Book Two started.
+
+**Each volume becomes its own `Story`.** Book/Volume/Season/Arc markers are parsed out
+of the title during normalization, and posts sharing a base title but differing in
+volume are committed as separate `Story` records carrying the same `series_key` (derived
+from the base title + author). Within a story, numbering is contiguous again, so
+ordering and gap detection work unmodified.
+
+The `series_key` keeps the volumes visibly related: Story List groups stories of one
+series together, and Story Detail links to the sibling volumes so moving from the end of
+Book One to the start of Book Two is one keystroke.
+
+### Navigation-link expansion (tracked stories only)
+
+Most serial authors put `[First] [Prev] [Next]` links in each post — the most reliable
+linkage signal available, and far better than title parsing. But it lives in the body,
+which is only cached for tracked stories, so it cannot drive initial detection without
+reversing the storage decision.
+
+The compromise: title parsing remains the primary detection method, and nav links are
+used as a **secondary verification and expansion pass that runs only on tracked
+stories**, where bodies are already local and the pass costs no extra API calls. It
+parses `First`/`Prev`/`Next`/`Previous` links out of each cached body, resolves them to
+Reddit post ids, and uses the resulting chain to:
+
+- confirm or correct part ordering when title-derived numbers are absent or ambiguous,
+  and
+- surface parts the title matching missed (a chapter the author titled inconsistently),
+  offered through the normal curation flow.
+
+Links pointing at posts not in the cache are fetched as `PostMeta` and presented as
+candidates; they are never silently added.
+
+### Attaching new parts to existing stories
+
+Curation is for discovering **new series**, not for re-approving every new chapter of a
+series you already read. Without this distinction, a refresh that turns up new parts for
+20 tracked stories would demand 20 curation passes, and you would stop refreshing.
+
+So detection runs against committed stories first:
+
+1. A newly fetched post whose (normalized base title, author) matches a **committed**
+   `Story` is scored the same way as any other candidate.
+2. Above a confidence threshold, it **auto-attaches**: a `StoryPart` row is created, the
+   `PostBody` is fetched if the story is tracked, and `last_updated_at` is bumped. No
+   prompt.
+3. Below the threshold, it goes to the curation screen as an ambiguous match against
+   that specific story ("looks like it belongs to X — attach?") rather than as a
+   brand-new series candidate.
+4. Posts matching no committed story follow the normal new-series curation flow.
+
+**Unread state is derived, never stored.** A story has unread parts when any part orders
+after `last_read_part`; the count shown in Story List is computed from the same ordering
+the reader uses. There is no per-part read flag to keep in sync.
 
 ### Gap detection
 
@@ -122,6 +201,23 @@ trigger it; it is never automatic. Triggering it pulls the author's submission h
 via `reddit_client.py`, re-runs the title-pattern matching above against that expanded
 set, and surfaces any newly found candidate parts through the same curation flow for
 confirm/merge.
+
+### Unavailable parts
+
+Some gaps can never be filled: the author deleted the chapter, mods removed it, or the
+author nuked their whole history on moving to Patreon or RoyalRoad. Left alone, those
+gaps get flagged forever and "find missing parts" keeps failing on them.
+
+An `unavailable_parts` record per story tracks part numbers known to be unfillable.
+A number lands there when a "find missing parts" run completes without locating it, and
+gap detection then stops reporting it — the story reads as complete-as-possible. You can
+also mark a gap unavailable by hand, and clear the mark to force a re-check if you think
+the post resurfaced.
+
+Separately, a part **already cached** in a tracked story that later disappears from
+Reddit keeps its locally cached body — that is precisely what the cache is for, and the
+part stays readable and exportable. It is flagged as no longer available upstream so the
+links export can note that its permalink is dead.
 
 ## TUI Screens & Flow
 
@@ -164,6 +260,22 @@ option (not just credentials): **CLI flags > config file > environment variables
   - `reddit-reader export <story-id>` — one-shot export outside the TUI.
 - All options resolve once at startup into a single `Settings` pydantic model, passed
   down to the rest of the app.
+
+## Boilerplate Cleaning
+
+Serial posts carry recurring cruft that is useful on Reddit and noise in an assembled
+90-chapter file: `[First] [Prev] [Next]` navigation blocks, Patreon/RoyalRoad/Ko-fi
+plugs, and "hope you enjoyed, comments welcome" sign-offs. Exported verbatim, that's 90
+copies of each.
+
+`cleaning.py` strips these by pattern before text reaches the reader or an export:
+
+- navigation link blocks (`First`/`Prev`/`Previous`/`Next` link clusters),
+- known external-support link plugs (Patreon, RoyalRoad, Ko-fi, and similar).
+
+The **raw body is always stored untouched** in `PostBody`; cleaning is applied on
+render, so the patterns can be improved later without re-fetching anything. Stripping is
+toggleable in config for when you'd rather see the post as written.
 
 ## Export
 
