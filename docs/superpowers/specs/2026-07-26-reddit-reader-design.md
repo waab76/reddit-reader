@@ -3,8 +3,8 @@
 ## Purpose
 
 A Python/PRAW-based interactive tool for finding, assembling, and reading multi-part
-stories posted across multiple submissions to a subreddit (e.g. r/HFY), where a single
-"story" is split across many posts ("parts"/"chapters") over time.
+stories from serial-fiction subreddits (e.g. r/HFY), where a single "story" is split
+across many posts ("parts"/"chapters") over time.
 
 ## Scope (v1)
 
@@ -31,11 +31,12 @@ Layered modules, each with one job, communicating only through pydantic models:
 ```
 reddit_reader/
   config.py       # layered settings: CLI flags > config file > env vars (pydantic-settings)
-  models.py       # pydantic models: PostMeta, PostBody, Story, StoryPart, DetectionMatch
+  models.py       # pydantic models: PostMeta, PostBody, Story, StoryPart, DetectionMatch,
+                  #   UnavailablePart, CleaningRule
   reddit_client.py# PRAW wrapper — subreddit listing fetch, live search, author submission history
   storage.py      # sqlite3 + pydantic — post/story cache, curation state, FTS5 full-text index
   detection.py    # series-detection heuristics, gap detection, gap-driven author-history expansion
-  cleaning.py     # boilerplate stripping (nav links, plugs) — shared by reader and export
+  cleaning.py     # boilerplate removal: pattern stripping + learned header/footer detection
   export.py       # Markdown story export + links-file export
   tui/            # Textual app: browse, search, series list, reader, curation, "find missing parts" action
   cli.py          # entry point — parses config, launches TUI or runs one-shot commands
@@ -81,8 +82,11 @@ unbounded local storage growth from every post ever seen while browsing.
   `exported_markdown_path` (nullable),
   `exported_at` (nullable), `last_updated_at`. Status (complete / ongoing / stale) and
   unread counts are derived, not stored.
-- **`DetectionMatch`** — transient candidate grouping + confidence + reasoning, shown
-  during curation before becoming a real `Story`/`StoryPart` pair. Never auto-committed.
+- **`DetectionMatch`** — transient candidate grouping + confidence + reasoning. A match
+  proposing a **new series** always goes through curation. A high-confidence match
+  against an **already-committed** story auto-attaches without a prompt (see *Attaching
+  new parts to existing stories*) — that is the one case that bypasses review, and it
+  only ever adds a part to a story you already accepted.
 
 ### Search index
 
@@ -137,9 +141,11 @@ Given a batch of `PostMeta` from a fetch:
 5. **Ordering** — parts ordered by the sort key described above (whole numbers,
    decimals, then named parts anchored by `created_utc` relative to numbered
    neighbors); multi-segment parts are concatenated in segment order.
-6. **Output** — a list of `DetectionMatch` candidates, always reviewed in the curation
-   screen (merge, split, drop, reorder) before becoming committed `Story`/`StoryPart`
-   records.
+6. **Output** — a list of `DetectionMatch` candidates. New-series candidates are
+   reviewed in the curation screen (merge, split, drop, reorder) before becoming
+   committed `Story`/`StoryPart` records; high-confidence matches against stories
+   already committed skip review and attach directly (see *Attaching new parts to
+   existing stories*).
 
 ### Crosspost and duplicate handling
 
@@ -204,8 +210,10 @@ series you already read. Without this distinction, a refresh that turns up new p
 
 So detection runs against committed stories first:
 
-1. A newly fetched post whose (normalized base title, author) matches a **committed**
-   `Story` is scored the same way as any other candidate.
+1. A newly fetched post whose (normalized base title, author, volume) — the same
+   grouping key used in detection — matches a **committed** `Story` is scored the same
+   way as any other candidate. Matching on volume too is what keeps `Book Two,
+   Chapter 1` from attaching itself to the Book One story.
 2. Above a confidence threshold, it **auto-attaches**: a `StoryPart` row is created, the
    `PostBody` is fetched if the story is tracked, and `last_updated_at` is bumped. No
    prompt.
@@ -262,7 +270,7 @@ Some gaps can never be filled: the author deleted the chapter, mods removed it, 
 author nuked their whole history on moving to Patreon or RoyalRoad. Left alone, those
 gaps get flagged forever and "find missing parts" keeps failing on them.
 
-An `unavailable_parts` record per story tracks part numbers known to be unfillable.
+An `UnavailablePart` record per story tracks part numbers known to be unfillable.
 A number lands there when a "find missing parts" run completes without locating it, and
 gap detection then stops reporting it — the story reads as complete-as-possible. You can
 also mark a gap unavailable by hand, and clear the mark to force a re-check if you think
@@ -300,9 +308,10 @@ links export can note that its permalink is dead.
   gaps are detected); export actions. When cross-part detection finds a candidate
   header/footer block, it's previewed here for one-time approval before it affects
   reading or export.
-- **Reader** — renders a tracked story's parts in order with a `## Part N` boundary
-  notation between parts; resumes from your saved position by default, with a manual
-  jump to any part (e.g. to read only newly added installments).
+- **Reader** — renders a tracked story's parts in order with a boundary heading between
+  parts (same numbered-or-labelled form as the Markdown export); resumes from your saved
+  position by default, with a manual jump to any part (e.g. to read only newly added
+  installments).
 
 Navigation is a standard Textual screen stack (push/pop); Story List is the home screen.
 
@@ -426,8 +435,11 @@ config for when you'd rather read the post exactly as written.
 
 - **Story export (Markdown)** — regenerates the full file every time (simplest,
   always-consistent behavior, no drift risk from partial updates): all parts in order,
-  each prefixed with a `## Part N — [source](url) — posted <date>` boundary, story
-  title as an H1. Written to `exported_markdown_path` (default
+  each prefixed with a boundary heading, story title as an H1. The boundary uses the
+  part's number when it has one and its `part_label` otherwise
+  (`## Interlude — [source](url) — posted <date>`), so unnumbered parts are not
+  mislabelled `Part None`. A part assembled from multiple segments gets one boundary
+  and cites each segment's permalink. Written to `exported_markdown_path` (default
   `<export-dir>/<author>-<sanitized-title>[-<volume>].md` — the author and volume
   qualifiers keep two different serials of the same name from overwriting each other),
   overwritten in place on re-export.
