@@ -3,7 +3,7 @@
 ## Purpose
 
 A Python/PRAW-based interactive tool for finding, assembling, and reading multi-part
-stories posted across multiple submissions to a subreddit (e.g. r/FHY), where a single
+stories posted across multiple submissions to a subreddit (e.g. r/HFY), where a single
 "story" is split across many posts ("parts"/"chapters") over time.
 
 ## Scope (v1)
@@ -24,9 +24,9 @@ reddit_reader/
   models.py       # pydantic models: PostMeta, PostBody, Story, StoryPart, DetectionMatch
   reddit_client.py# PRAW wrapper — subreddit listing fetch, live search, author submission history
   storage.py      # sqlite3 + pydantic — post/story cache, curation state, FTS5 full-text index
-  detection.py    # series-detection heuristics + on-demand "find all parts" (author-history expansion)
+  detection.py    # series-detection heuristics, gap detection, gap-driven author-history expansion
   export.py       # Markdown story export + links-file export
-  tui/            # Textual app: browse, search, series list, reader, curation, "find all parts" action
+  tui/            # Textual app: browse, search, series list, reader, curation, "find missing parts" action
   cli.py          # entry point — parses config, launches TUI or runs one-shot commands
 ```
 
@@ -92,15 +92,36 @@ Given a batch of `PostMeta` from a subreddit fetch:
    screen (merge, split, drop, reorder) before becoming committed `Story`/`StoryPart`
    records.
 
-### Find all parts (author-history expansion)
+### Gap detection
 
-On-demand, per story (not automatic on every detection pass, to avoid unnecessary API
-calls): given a selected story, pull the author's full submission history via
-`reddit_client.py`, re-run the title-pattern matching above against that expanded set,
-and surface any newly found candidate parts through the same curation flow for
-confirm/merge. Used both for backfilling old parts missed by the initial subreddit
-fetch window, and for finding new installments (e.g. parts 31-33 added to a
-previously-tracked 30-part story).
+After a story's parts are committed, the known `part_number` values are checked for
+completeness. A **gap** is either:
+
+- an **interior gap** — a missing number strictly between known parts (have 1-3 and
+  5-8; part 4 is missing), or
+- a **missing start** — the sequence doesn't begin at part 1 (have 5-30; parts 1-4 are
+  missing).
+
+Gaps are *computed on demand* from the story's `StoryPart` rows, not stored — there is
+no gap state to keep in sync.
+
+Trailing parts are deliberately **not** treated as a gap: newer installments appear in
+the subreddit listing and are picked up by an ordinary manual refresh, so they need no
+author-history lookup. Parts with `part_number = None` are excluded from the gap
+calculation (they can't be positioned reliably), and a story whose parts are entirely
+unnumbered simply reports no gaps.
+
+### Find missing parts (author-history expansion)
+
+Only runs when gap detection reports gaps — a story with a complete, contiguous
+sequence has nothing to backfill, so the action is disabled and no API calls are made.
+
+When gaps exist, the story is flagged in the UI with the specific missing parts (e.g.
+"missing parts 4, 12"), and the "find missing parts" action becomes available. **You**
+trigger it; it is never automatic. Triggering it pulls the author's submission history
+via `reddit_client.py`, re-runs the title-pattern matching above against that expanded
+set, and surfaces any newly found candidate parts through the same curation flow for
+confirm/merge.
 
 ## TUI Screens & Flow
 
@@ -114,10 +135,12 @@ previously-tracked 30-part story).
   scores; actions to accept (commit as `Story`), merge two candidates, split a bad
   grouping, drop a false match, or manually reorder parts.
 - **Story List** — tracked `Story` records: title, author, part count, last-read
-  position, and whether new parts are available since last fetch.
-- **Story Detail** — a selected story: part list; "select/track" action (triggers
-  eager `PostBody` fetch for all known parts); "find all parts" action (author-history
-  expansion); export actions.
+  position, whether new parts are available since last fetch, and a gap indicator for
+  stories with missing parts.
+- **Story Detail** — a selected story: part list with any missing parts called out
+  explicitly; "select/track" action (triggers eager `PostBody` fetch for all known
+  parts); "find missing parts" action (author-history expansion, enabled only when
+  gaps are detected); export actions.
 - **Reader** — renders a tracked story's parts in order with a `## Part N` boundary
   notation between parts; resumes from `last_read_part` by default, with a manual jump
   to any part (e.g. to read only newly added installments).
@@ -171,7 +194,9 @@ option (not just credentials): **CLI flags > config file > environment variables
   tests.
 - `detection.py` and `export.py` are pure-ish functions over pydantic models — unit
   tested directly with fixture titles, including bracket-tag stripping and
-  spelled-out-chapter-number cases.
+  spelled-out-chapter-number cases. Gap detection is pure list-of-ints logic and gets
+  direct cases: contiguous (no gaps), interior gap, missing start, unnumbered parts
+  excluded, entirely-unnumbered story.
 - `storage.py` is tested against a real temporary SQLite file (fast; no need to mock
   SQLite itself).
 - TUI screens get lighter smoke-test coverage via Textual's built-in test harness
