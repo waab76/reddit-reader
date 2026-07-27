@@ -43,5 +43,12 @@ warn_unreachable = true
 module = ["praw.*", "prawcore.*", "text_to_num.*"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+# reddit_reader.tui does not exist until Task 21 (Layer 6); cli.py's tui()
+# command imports it lazily so the CLI stays importable and testable before
+# then. This override keeps `mypy reddit_reader` clean in the interim.
+module = ["reddit_reader.tui.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
