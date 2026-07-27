@@ -7,21 +7,33 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from decimal import Decimal
+from pathlib import Path
 
 from pydantic import BaseModel
 
+from reddit_reader.cleaning import detect_boilerplate
 from reddit_reader.config import Settings
 from reddit_reader.detection import (
     decide_attachment,
+    find_gaps,
     group_posts,
     series_key,
 )
+from reddit_reader.export import (
+    export_filename,
+    render_links,
+    render_markdown,
+    write_export,
+)
 from reddit_reader.models import (
+    CleaningRule,
     DetectionMatch,
     PostMeta,
     Story,
     StoryPart,
     StoryStatus,
+    UnavailablePart,
 )
 from reddit_reader.navlinks import parse_nav_links
 from reddit_reader.ordering import OrderedPart, group_segments, resolve_order
@@ -38,6 +50,15 @@ class FetchResult(BaseModel):
     fetched: int
     auto_attached: int
     candidates: list[DetectionMatch]
+
+
+class StorageUsage(BaseModel):
+    """How much disk the local cache is using."""
+
+    total_bytes: int
+    body_bytes: int
+    post_count: int
+    body_count: int
 
 
 class ReaderService:
@@ -298,3 +319,182 @@ class ReaderService:
         return (
             StoryStatus.STALE if age_days > self.settings.stale_after_days else StoryStatus.ONGOING
         )
+
+    # ---- gaps and backfill ------------------------------------------------------
+
+    def gaps(self, story_id: int) -> list[Decimal]:
+        """Interior gaps and a missing start, minus anything known unavailable."""
+        numbers = [
+            part.part_number
+            for part in self.stories.parts(story_id)
+            if part.part_number is not None
+        ]
+        unavailable = [rec.part_number for rec in self.stories.unavailable(story_id)]
+        return find_gaps(numbers, unavailable)
+
+    def mark_unavailable(self, story_id: int, part_number: Decimal, auto: bool = False) -> None:
+        self.stories.add_unavailable(
+            UnavailablePart(story_id=story_id, part_number=part_number, auto_marked=auto)
+        )
+
+    def clear_unavailable(self, story_id: int, part_number: Decimal) -> None:
+        self.stories.clear_unavailable(story_id, part_number)
+
+    def find_missing_parts(self, story_id: int) -> list[DetectionMatch]:
+        """Pull author history to backfill gaps. Only meaningful when gaps exist."""
+        missing = self.gaps(story_id)
+        if not missing:
+            return []
+
+        story = self.stories.get(story_id)
+        if story is None:
+            return []
+
+        history = self.client.author_submissions(story.author)
+        self.posts.upsert_many(history)
+        for post in history:
+            self.search.index_title(post)
+
+        known = set(self.stories.part_post_ids(story_id))
+        target_key = series_key(story.author, story.title.lower())
+
+        candidates: list[DetectionMatch] = []
+        found_numbers: set[Decimal] = set()
+
+        for match in group_posts(history, self.settings.subreddits):
+            if series_key(match.author, match.base_title) != target_key:
+                continue
+            if match.volume != story.volume:
+                continue
+            new_ids = [pid for pid in match.post_ids if pid not in known]
+            if not new_ids:
+                continue
+            match.post_ids = new_ids
+            match.existing_story_id = story_id
+            candidates.append(match)
+            for meta in self.posts.get_many(new_ids):
+                parsed = parse_title(meta.title)
+                if parsed.part_number is not None:
+                    found_numbers.add(parsed.part_number)
+
+        # Anything the author's full history could not produce is unfillable.
+        for number in missing:
+            if number not in found_numbers:
+                self.mark_unavailable(story_id, number, auto=True)
+
+        return candidates
+
+    # ---- export -----------------------------------------------------------------
+
+    def _rules_for(self, story_id: int) -> list[CleaningRule]:
+        if not self.settings.cleaning_enabled:
+            return []
+        return self.stories.cleaning_rules(story_id)
+
+    def export_story(self, story_id: int) -> Path:
+        """Regenerate the story's full markdown file, overwriting in place."""
+        story = self.stories.get(story_id)
+        if story is None:
+            raise ValueError(f"no story with id {story_id}")
+
+        groups = self.ordered_groups(story_id)
+        bodies = {
+            post_id: body.selftext
+            for post_id in self.stories.part_post_ids(story_id)
+            if (body := self.posts.get_body(post_id)) is not None
+        }
+
+        content = render_markdown(story, groups, bodies, self._rules_for(story_id))
+        path = self.settings.export_dir / export_filename(story)
+        write_export(path, content)
+
+        story.exported_markdown_path = str(path)
+        story.exported_at = datetime.now(UTC)
+        self.stories.update(story)
+        return path
+
+    def export_links_file(self, story_id: int) -> Path:
+        story = self.stories.get(story_id)
+        if story is None:
+            raise ValueError(f"no story with id {story_id}")
+
+        content = render_links(story, self.ordered_groups(story_id))
+        path = self.settings.export_dir / export_filename(story).replace(".md", "-links.md")
+        write_export(path, content)
+        return path
+
+    # ---- search -----------------------------------------------------------------
+
+    def search_local(self, query: str, limit: int = 50) -> list[PostMeta]:
+        return self.posts.get_many(self.search.search(query, limit))
+
+    def search_live(
+        self, query: str, subreddit: str | None = None, limit: int = 50
+    ) -> list[PostMeta]:
+        """Search Reddit directly, merging results into the local cache."""
+        found = self.client.search(query, subreddit, limit)
+        self.posts.upsert_many(found)
+        for post in found:
+            self.search.index_title(post)
+        return found
+
+    # ---- storage management -----------------------------------------------------
+
+    def delete_story(self, story_id: int) -> None:
+        """Remove a story and its annotations; PostMeta survives for re-detection."""
+        post_ids = self.stories.part_post_ids(story_id)
+        self.posts.delete_bodies(post_ids)
+        for post_id in post_ids:
+            self.search.remove_body(post_id)
+        self.stories.delete(story_id)
+
+    def prune_orphans(self) -> int:
+        """Clear cached metadata belonging to no story."""
+        orphans = self.posts.orphaned_ids()
+        for post_id in orphans:
+            self.search.remove(post_id)
+        return self.posts.delete_meta(orphans)
+
+    def storage_usage(self) -> StorageUsage:
+        counts = self.posts.conn.execute(
+            """
+            SELECT
+                (SELECT COUNT(*) FROM post_meta) AS posts,
+                (SELECT COUNT(*) FROM post_body) AS bodies,
+                (SELECT COALESCE(SUM(LENGTH(selftext)), 0) FROM post_body) AS body_bytes
+            """
+        ).fetchone()
+        page_info = self.posts.conn.execute(
+            "SELECT page_count * page_size AS total FROM pragma_page_count(), pragma_page_size()"
+        ).fetchone()
+        return StorageUsage(
+            total_bytes=page_info["total"],
+            body_bytes=counts["body_bytes"],
+            post_count=counts["posts"],
+            body_count=counts["bodies"],
+        )
+
+    # ---- learned cleaning -------------------------------------------------------
+
+    def propose_cleaning_rules(self, story_id: int) -> list[CleaningRule]:
+        """Detect repeated headers/footers. Returns proposals only — never applied."""
+        bodies = [
+            body.selftext
+            for post_id in self.stories.part_post_ids(story_id)
+            if (body := self.posts.get_body(post_id)) is not None
+        ]
+        blocks = detect_boilerplate(
+            bodies,
+            window=self.settings.cleaning_window,
+            majority=self.settings.cleaning_majority,
+            min_parts=self.settings.cleaning_min_parts,
+        )
+        return [
+            CleaningRule(
+                story_id=story_id,
+                position=block.position,
+                block=block.block,
+                seen_in_parts=block.seen_in_parts,
+            )
+            for block in blocks
+        ]
