@@ -221,7 +221,8 @@ class ReaderService:
         # Pull metadata for anything not already cached so it can be reviewed.
         for candidate in referenced:
             if self.posts.get_meta(candidate) is None:
-                for meta in self.client.search(candidate, limit=1):
+                meta = self.client.get_meta_by_id(candidate)
+                if meta is not None:
                     self.posts.upsert_meta(meta)
                     self.search.index_title(meta)
 

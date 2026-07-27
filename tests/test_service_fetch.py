@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from reddit_reader.config import Settings
-from reddit_reader.models import StoryStatus
+from reddit_reader.models import PostBody, StoryStatus
 from reddit_reader.reddit_client import RedditClient
 from reddit_reader.service import ReaderService
 from reddit_reader.storage import PostRepository, SearchIndex, StoryRepository, connect
@@ -192,3 +192,27 @@ def test_nav_expansion_ignores_parts_already_in_the_story(service: ReaderService
 def test_nav_expansion_is_empty_for_untracked_stories(service: ReaderService) -> None:
     story_id = service.commit_match(service.fetch().candidates[0])
     assert service.nav_link_expansion(story_id) == []
+
+
+def test_nav_expansion_fetches_metadata_for_a_candidate_not_yet_cached(
+    service: ReaderService,
+) -> None:
+    story_id = service.commit_match(service.fetch().candidates[0])
+    service.track(story_id)
+
+    # Unlike odd1 in the earlier test, this post was never part of any
+    # listing fetch, so its metadata is genuinely absent from the local
+    # cache -- only reachable through a direct by-id lookup.
+    service.client._reddit.submissions.append(  # type: ignore[attr-defined]
+        make_submission("odd2", "A Second Detour", created_days=22)
+    )
+    service.posts.set_body(
+        PostBody(
+            post_id="a3",
+            selftext="End of chapter.\n\n[Next](https://www.reddit.com/r/HFY/comments/odd2/x/)",
+        )
+    )
+
+    assert service.posts.get_meta("odd2") is None
+    assert service.nav_link_expansion(story_id) == ["odd2"]
+    assert service.posts.get_meta("odd2") is not None

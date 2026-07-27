@@ -73,6 +73,17 @@ def test_fetch_bodies_skips_missing_posts(client: RedditClient) -> None:
     assert client.fetch_bodies(["nope"]) == []
 
 
+def test_get_meta_by_id_returns_the_post(client: RedditClient) -> None:
+    meta = client.get_meta_by_id("a1")
+    assert meta is not None
+    assert meta.id == "a1"
+    assert meta.title == "Road - Part 1"
+
+
+def test_get_meta_by_id_returns_none_for_missing_post(client: RedditClient) -> None:
+    assert client.get_meta_by_id("nope") is None
+
+
 def test_check_available_is_false_for_missing_post(client: RedditClient) -> None:
     assert client.check_available("nope") is False
 

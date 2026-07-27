@@ -99,6 +99,14 @@ class RedditClient:
             bodies.append(PostBody(post_id=post_id, selftext=submission.selftext))
         return bodies
 
+    def get_meta_by_id(self, post_id: str) -> PostMeta | None:
+        """Fetch one post's metadata directly by id. Returns None if it's gone."""
+        try:
+            submission = self._reddit.submission(id=post_id)
+        except Exception:  # noqa: BLE001 - a gone post is expected, not exceptional
+            return None
+        return to_post_meta(submission)
+
     def check_available(self, post_id: str) -> bool:
         """Report whether a post still exists upstream."""
         try:
