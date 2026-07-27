@@ -55,3 +55,14 @@ def test_blank_input_stays_blank() -> None:
 def test_excess_blank_lines_are_collapsed() -> None:
     text = "Line one.\n\n\n\n\nLine two."
     assert "\n\n\n" not in strip_patterns(text)
+
+
+def test_signoff_shaped_dialogue_near_start_is_not_stripped() -> None:
+    text = (
+        "Thanks for reading the ambassador's report, Captain said grimly.\n\n"
+        "The bridge crew exchanged glances as the words settled over them.\n\n"
+        "Days later, the fleet finally reached the outer colonies, weary but unbroken.\n\n"
+        "The captain filed her final log entry and allowed herself a rare smile."
+    )
+    cleaned = strip_patterns(text)
+    assert "Thanks for reading the ambassador's report" in cleaned
