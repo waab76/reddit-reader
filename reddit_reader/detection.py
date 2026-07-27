@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import statistics
 from collections.abc import Sequence
+from decimal import Decimal
 from difflib import SequenceMatcher
 from itertools import pairwise
+from typing import Literal
+
+from pydantic import BaseModel
 
 from reddit_reader.dedupe import collapse_duplicates
-from reddit_reader.models import DetectionMatch, PostMeta
+from reddit_reader.models import DetectionMatch, PostMeta, Story
 from reddit_reader.ordering import resolve_order
 from reddit_reader.titles import ParsedTitle, parse_title
 
@@ -120,3 +124,51 @@ def group_posts(
         )
 
     return matches
+
+
+DEFAULT_ATTACH_THRESHOLD = 0.85
+
+
+class AttachDecision(BaseModel):
+    """What to do with a detection match: attach silently, curate, or treat as new."""
+
+    action: Literal["auto_attach", "curate", "new_series"]
+    story_id: int | None
+    confidence: float
+
+
+def find_gaps(
+    part_numbers: Sequence[Decimal], unavailable: Sequence[Decimal] = ()
+) -> list[Decimal]:
+    """Return whole-number parts missing from the start of, or inside, the sequence.
+
+    Trailing parts are deliberately not gaps: newer installments arrive via an
+    ordinary refresh and need no author-history lookup.
+    """
+    whole = sorted({n for n in part_numbers if n == n.to_integral_value()})
+    if not whole:
+        return []
+
+    suppressed = set(unavailable)
+    highest = max(whole)
+    present = set(whole)
+
+    missing = [
+        Decimal(candidate)
+        for candidate in range(1, int(highest))
+        if Decimal(candidate) not in present and Decimal(candidate) not in suppressed
+    ]
+    return missing
+
+
+def decide_attachment(
+    match: DetectionMatch, existing: Story | None, threshold: float
+) -> AttachDecision:
+    """Decide whether a match attaches silently, needs curation, or is a new series."""
+    if existing is None:
+        return AttachDecision(action="new_series", story_id=None, confidence=match.confidence)
+    if match.confidence >= threshold:
+        return AttachDecision(
+            action="auto_attach", story_id=existing.id, confidence=match.confidence
+        )
+    return AttachDecision(action="curate", story_id=existing.id, confidence=match.confidence)
