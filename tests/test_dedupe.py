@@ -96,3 +96,23 @@ def test_different_part_numbers_are_not_duplicates() -> None:
         PRIORITY,
     )
     assert len(groups) == 2
+
+
+def test_chained_crosspost_all_land_in_one_group() -> None:
+    a = post("a", sub="HFY", hours=0)
+    b = post("b", sub="Mirror1", hours=1, crosspost_parent="a")
+    c = post("c", sub="Mirror2", hours=2, crosspost_parent="b")
+    groups = collapse_duplicates([a, b, c], PRIORITY)
+    assert len(groups) == 1
+    assert groups[0].canonical.id == "a"
+    assert {p.id for p in groups[0].alternates} == {"b", "c"}
+
+
+def test_chained_crosspost_is_order_independent() -> None:
+    a = post("a", sub="HFY", hours=0)
+    b = post("b", sub="Mirror1", hours=1, crosspost_parent="a")
+    c = post("c", sub="Mirror2", hours=2, crosspost_parent="b")
+    groups = collapse_duplicates([a, c, b], PRIORITY)
+    assert len(groups) == 1
+    assert groups[0].canonical.id == "a"
+    assert {p.id for p in groups[0].alternates} == {"b", "c"}
