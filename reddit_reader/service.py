@@ -90,7 +90,7 @@ class ReaderService:
             decision = decide_attachment(match, existing, self.settings.attach_threshold)
 
             if decision.action == "auto_attach" and decision.story_id is not None:
-                auto_attached += self._attach_parts(decision.story_id, match)
+                auto_attached += self.attach_parts(decision.story_id, match)
             else:
                 match.existing_story_id = decision.story_id
                 candidates.append(match)
@@ -99,7 +99,7 @@ class ReaderService:
             fetched=len(collected), auto_attached=auto_attached, candidates=candidates
         )
 
-    def _attach_parts(self, story_id: int, match: DetectionMatch) -> int:
+    def attach_parts(self, story_id: int, match: DetectionMatch) -> int:
         """Add any of `match`'s posts not already in the story. Returns how many."""
         known = set(self.stories.part_post_ids(story_id))
         new_ids = [post_id for post_id in match.post_ids if post_id not in known]
