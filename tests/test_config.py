@@ -2,7 +2,18 @@ from pathlib import Path
 
 import pytest
 
+import reddit_reader.config as config_module
 from reddit_reader.config import Settings, load_settings
+
+
+@pytest.fixture(autouse=True)
+def _isolate_default_config_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every test in this module that omits `config_path` falls through to
+    `DEFAULT_CONFIG_PATH` — the real `~/.config/reddit-reader/config.toml` this
+    app tells users to create. Point it somewhere that can never exist so the
+    suite never reads real machine state, regardless of what's installed on the
+    machine running it."""
+    monkeypatch.setattr(config_module, "DEFAULT_CONFIG_PATH", tmp_path / "nonexistent.toml")
 
 
 def write_config(tmp_path: Path, body: str) -> Path:
