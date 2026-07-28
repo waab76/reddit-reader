@@ -1,5 +1,8 @@
+from datetime import UTC, datetime
+
 import pytest
 
+from reddit_reader.models import DetectionMatch, PostMeta
 from reddit_reader.service import ReaderService
 from reddit_reader.tui.screens.browse import BrowseScreen
 from reddit_reader.tui.screens.curation import CurationScreen
@@ -55,6 +58,43 @@ def test_curation_accept_commits_a_story(service: ReaderService) -> None:
     screen = CurationScreen(service, candidates)
     story_id = screen.accept(0)
     assert service.stories.get(story_id) is not None
+
+
+def test_curation_accept_attaches_to_an_existing_story(service: ReaderService) -> None:
+    """`existing_story_id` set -> attach_parts, not commit_match (no new Story row)."""
+    candidates = service.fetch().candidates
+    target = next(c for c in candidates if len(c.post_ids) > 1)  # "The Long Road"
+    story_id = service.commit_match(target)
+    before_part_ids = set(service.stories.part_post_ids(story_id))
+    story_count_before = len(service.stories.all_stories())
+
+    new_post_id = "z9"
+    service.posts.upsert_meta(
+        PostMeta(
+            id=new_post_id,
+            subreddit="HFY",
+            author=target.author,
+            title="The Long Road - Part 99",
+            permalink=f"/r/HFY/comments/{new_post_id}/x/",
+            created_utc=datetime(2026, 2, 1, tzinfo=UTC),
+            score=10,
+        )
+    )
+    match = DetectionMatch(
+        base_title=target.base_title,
+        author=target.author,
+        volume=target.volume,
+        post_ids=[new_post_id],
+        confidence=0.5,
+        existing_story_id=story_id,
+    )
+    screen = CurationScreen(service, [match])
+    result_id = screen.accept(0)
+
+    assert result_id == story_id
+    assert len(service.stories.all_stories()) == story_count_before  # no new story created
+    assert new_post_id in service.stories.part_post_ids(story_id)
+    assert before_part_ids < set(service.stories.part_post_ids(story_id))  # grew, didn't replace
 
 
 def test_curation_drop_removes_a_candidate(service: ReaderService) -> None:
