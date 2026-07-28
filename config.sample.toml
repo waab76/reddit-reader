@@ -1,0 +1,76 @@
+# Sample reddit-reader configuration.
+#
+# Copy this file to ~/.config/reddit-reader/config.toml (or pass
+# --config path/to/this/file to any command) and edit as needed.
+#
+# Precedence for every setting, highest wins: CLI flags > this file >
+# environment variables (REDDIT_READER_<SETTING_NAME>, e.g.
+# REDDIT_READER_FETCH_LIMIT=200). Anything you leave commented out here
+# falls through to its environment variable if set, otherwise its default.
+#
+# Reddit API credentials do NOT go in this file — they live in a separate
+# praw.ini (see README.md).
+
+# Subreddits to fetch from, in priority order. List order matters: when the
+# same chapter is crossposted or mirrored across more than one of these,
+# the copy from the subreddit listed first is treated as canonical.
+subreddits = ["HFY"]
+
+# Which named section of praw.ini to use for credentials. praw.ini can hold
+# multiple profiles (e.g. different Reddit accounts); this picks one.
+# praw_site = "default"
+
+# Where the local SQLite cache (post metadata, tracked story bodies, read
+# progress) lives. Created automatically if it doesn't exist.
+# database_path = "~/.local/share/reddit-reader/library.db"
+
+# Where exported Markdown/links files are written.
+# export_dir = "~/reddit-reader-exports"
+
+# Default listing type for `fetch` / Browse: "new", "hot", or "top".
+# Routine refreshes should stay "new" (keeps up with recent posts); switch
+# to "top" for a one-off sweep of a subreddit's back catalog.
+# listing = "new"
+
+# Time window for "top" listings: "day", "week", "month", "year", or "all".
+# Ignored unless listing = "top".
+# time_window = "all"
+
+# Maximum posts fetched per subreddit per fetch action.
+# fetch_limit = 100
+
+# --- Boilerplate cleaning -----------------------------------------------
+
+# Master switch for both pattern-based (nav links, Patreon/RoyalRoad/Ko-fi
+# plugs, sign-offs) and learned per-story boilerplate stripping. Turn off
+# to read/export posts exactly as written.
+# cleaning_enabled = true
+
+# How many leading/trailing lines of each part to scan when learning a
+# story's recurring header/footer.
+# cleaning_window = 12
+
+# Fraction of a story's parts that must share a header/footer line for it
+# to be proposed as a learned cleaning rule (0.0-1.0).
+# cleaning_majority = 0.6
+
+# Minimum tracked parts a story needs before learned-boilerplate detection
+# runs at all — repetition across too few samples means nothing.
+# cleaning_min_parts = 3
+
+# --- Story status and detection -----------------------------------------
+
+# A story with no new part in this many days is shown as "stale" rather
+# than "ongoing" (has no effect on stories explicitly marked complete via
+# a title tag like [Complete]).
+# stale_after_days = 180
+
+# Confidence score (0.0-1.0) a newly fetched post must meet or exceed to
+# auto-attach to an already-tracked story with no prompt. Below this, it's
+# surfaced in Curation for you to review instead.
+# attach_threshold = 0.85
+
+# How close together (in hours) two posts must be to be considered
+# possible mirrors/crossposts of the same part when no explicit crosspost
+# link is present.
+# dedupe_window_hours = 48
