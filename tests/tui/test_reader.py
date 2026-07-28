@@ -154,3 +154,110 @@ async def test_resuming_a_story_restores_the_saved_scroll_offset(
         maximum = max(scroll.max_scroll_y, 1)
         assert maximum > 0
         assert scroll.scroll_y == pytest.approx(0.6 * maximum, abs=1.0)
+
+
+# --- vim-style paging: space/b to page, g/G to jump to top/bottom -------------
+
+
+@pytest.fixture
+def long_body_screen_setup(populated: ReaderService, tracked_story: int):  # noqa: ANN201
+    """A tracked story whose first part has enough text to actually scroll."""
+    from reddit_reader.models import PostBody
+
+    story_id = tracked_story
+    first_post_id = populated.ordered_parts(story_id)[0].post.id
+    populated.posts.set_body(
+        PostBody(post_id=first_post_id, selftext="\n\n".join(f"Paragraph {n}." for n in range(200)))
+    )
+    return story_id
+
+
+@pytest.mark.asyncio
+async def test_pressing_capital_g_jumps_to_the_bottom(
+    populated: ReaderService, long_body_screen_setup: int
+) -> None:
+    from textual.containers import VerticalScroll
+
+    app = RedditReaderApp(populated)
+    async with app.run_test() as pilot:
+        screen = ReaderScreen(populated, long_body_screen_setup)
+        app.push_screen(screen)
+        await pilot.pause()
+        await pilot.pause()
+
+        scroll = screen.query_one("#body-scroll", VerticalScroll)
+        assert scroll.max_scroll_y > 0
+
+        await pilot.press("G")
+        await pilot.pause()
+
+        assert scroll.scroll_y == scroll.max_scroll_y
+
+
+@pytest.mark.asyncio
+async def test_pressing_lowercase_g_jumps_to_the_top(
+    populated: ReaderService, long_body_screen_setup: int
+) -> None:
+    from textual.containers import VerticalScroll
+
+    app = RedditReaderApp(populated)
+    async with app.run_test() as pilot:
+        screen = ReaderScreen(populated, long_body_screen_setup)
+        app.push_screen(screen)
+        await pilot.pause()
+        await pilot.pause()
+
+        scroll = screen.query_one("#body-scroll", VerticalScroll)
+        await pilot.press("G")
+        await pilot.pause()
+        assert scroll.scroll_y > 0  # sanity: we actually moved off the top
+
+        await pilot.press("g")
+        await pilot.pause()
+
+        assert scroll.scroll_y == 0
+
+
+@pytest.mark.asyncio
+async def test_pressing_space_pages_down(
+    populated: ReaderService, long_body_screen_setup: int
+) -> None:
+    from textual.containers import VerticalScroll
+
+    app = RedditReaderApp(populated)
+    async with app.run_test() as pilot:
+        screen = ReaderScreen(populated, long_body_screen_setup)
+        app.push_screen(screen)
+        await pilot.pause()
+        await pilot.pause()
+
+        scroll = screen.query_one("#body-scroll", VerticalScroll)
+        assert scroll.scroll_y == 0
+
+        await pilot.press("space")
+        await pilot.pause()
+
+        assert 0 < scroll.scroll_y <= scroll.max_scroll_y
+
+
+@pytest.mark.asyncio
+async def test_pressing_b_pages_up(populated: ReaderService, long_body_screen_setup: int) -> None:
+    from textual.containers import VerticalScroll
+
+    app = RedditReaderApp(populated)
+    async with app.run_test() as pilot:
+        screen = ReaderScreen(populated, long_body_screen_setup)
+        app.push_screen(screen)
+        await pilot.pause()
+        await pilot.pause()
+
+        scroll = screen.query_one("#body-scroll", VerticalScroll)
+        await pilot.press("G")
+        await pilot.pause()
+        after_bottom = scroll.scroll_y
+        assert after_bottom > 0
+
+        await pilot.press("b")
+        await pilot.pause()
+
+        assert scroll.scroll_y < after_bottom

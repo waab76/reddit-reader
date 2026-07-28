@@ -23,6 +23,10 @@ class ReaderScreen(Screen[None]):
         ("n", "next", "Next part"),
         ("p", "previous", "Previous part"),
         ("s", "toggle_spoilers", "Toggle spoilers"),
+        ("space", "page_down", "Page down"),
+        ("b", "page_up", "Page up"),
+        ("g", "scroll_top", "Top"),
+        ("G", "scroll_bottom", "Bottom"),
         ("escape", "app.back", "Back"),
     ]
 
@@ -173,6 +177,18 @@ class ReaderScreen(Screen[None]):
     def action_toggle_spoilers(self) -> None:
         self.toggle_spoilers()
         self.refresh_view()
+
+    def action_page_down(self) -> None:
+        self.query_one("#body-scroll", VerticalScroll).scroll_page_down()
+
+    def action_page_up(self) -> None:
+        self.query_one("#body-scroll", VerticalScroll).scroll_page_up()
+
+    def action_scroll_top(self) -> None:
+        self.query_one("#body-scroll", VerticalScroll).scroll_home()
+
+    def action_scroll_bottom(self) -> None:
+        self.query_one("#body-scroll", VerticalScroll).scroll_end()
 
     def on_unmount(self) -> None:
         """Persist how far through the part the reader had scrolled."""
