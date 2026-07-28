@@ -50,6 +50,41 @@ def make_submission(post_id: str, title: str, **kwargs: object) -> FakeSubmissio
     return FakeSubmission(id=post_id, title=title, **kwargs)  # type: ignore[arg-type]
 
 
+class FakeMissingSubmission:
+    """Models a real PRAW submission for a gone/nonexistent post.
+
+    Real PRAW submissions are lazy: `reddit.submission(id=...)` never raises by
+    itself, only attribute access does (the HTTP call happens on first access
+    to an un-cached attribute). `id` is always known immediately (it's what you
+    constructed the object with), so it's a real attribute here too; anything
+    else raises, exactly like a deleted/missing post would on first fetch.
+    """
+
+    def __init__(self, post_id: str) -> None:
+        self.id = post_id
+
+    def __getattr__(self, name: str) -> object:
+        raise LookupError(f"submission {self.id!r} not found")
+
+
+class LazyFetchTrap:
+    """A submission-shaped object exposing only explicitly "populated" attributes.
+
+    Models the listing-derived, not-yet-fetched submissions PRAW hands back from
+    a subreddit listing: some fields (id, title, score, ...) are already present
+    in `__dict__` from the listing JSON, but anything not explicitly populated
+    raises if accessed, standing in for the lazy HTTP fetch a real un-cached
+    attribute access would trigger. Used to prove conversion code reads only
+    what's already there and never touches the network to do it.
+    """
+
+    def __init__(self, **populated: object) -> None:
+        self.__dict__.update(populated)
+
+    def __getattr__(self, name: str) -> object:
+        raise AssertionError(f"accessing {name!r} would trigger a lazy PRAW fetch")
+
+
 class FakeListing:
     def __init__(self, submissions: list[FakeSubmission]) -> None:
         self._submissions = submissions
@@ -92,10 +127,19 @@ class FakeReddit:
     def redditor(self, name: str) -> FakeRedditor:
         return FakeRedditor([s for s in self.submissions if s.author_name == name])
 
-    def submission(self, id: str) -> FakeSubmission:  # noqa: A002 - mirrors PRAW's API
-        if id in self.missing_ids:
-            raise KeyError(id)
-        for candidate in self.submissions:
-            if candidate.id == id:
-                return candidate
-        raise KeyError(id)
+    def submission(self, id: str) -> FakeSubmission | FakeMissingSubmission:  # noqa: A002
+        """Mirrors PRAW's API: construction never fails, even for a missing post.
+
+        Real PRAW submissions are lazy — `reddit.submission(id=...)` always
+        succeeds; only a later attribute access triggers the fetch that can
+        fail. Raising here immediately (the old behavior) let production code
+        get away with only wrapping the constructor call in a `try`, which
+        would silently break against the real API. Returning a
+        `FakeMissingSubmission` instead defers the failure to attribute access,
+        same as the real thing.
+        """
+        if id not in self.missing_ids:
+            for candidate in self.submissions:
+                if candidate.id == id:
+                    return candidate
+        return FakeMissingSubmission(id)

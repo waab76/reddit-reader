@@ -31,6 +31,26 @@ class RedditFetchError(RedditError):
     """A listing, search, or submission fetch failed."""
 
 
+def _crosspost_parent_id(submission: Any) -> str | None:
+    """Read `crosspost_parent` without triggering a lazy fetch, and normalize it.
+
+    `getattr(submission, "crosspost_parent", None)` on a listing-derived (not yet
+    fetched) submission would trigger a full lazy-fetch HTTP request before
+    raising `AttributeError` for the ~99% of posts that have no crosspost parent
+    at all — turning one listing fetch into potentially hundreds of extra
+    requests. Reading straight from `__dict__` only sees what PRAW already
+    populated from the listing response, no fetch involved.
+
+    Real Reddit's `crosspost_parent` is a fullname like `t3_abc123`, not a bare
+    post id, so it's stripped here once at the boundary rather than downstream
+    (e.g. `dedupe.py` compares crosspost_parent directly against bare ids).
+    """
+    raw = submission.__dict__.get("crosspost_parent")
+    if not isinstance(raw, str):
+        return None
+    return raw[3:] if raw.startswith("t3_") else raw
+
+
 def to_post_meta(submission: Any) -> PostMeta:
     """Convert a PRAW submission into a `PostMeta`. The single conversion boundary."""
     author = getattr(submission, "author", None)
@@ -42,7 +62,7 @@ def to_post_meta(submission: Any) -> PostMeta:
         permalink=submission.permalink,
         created_utc=datetime.fromtimestamp(submission.created_utc, tz=UTC),
         score=getattr(submission, "score", 0),
-        crosspost_parent=getattr(submission, "crosspost_parent", None),
+        crosspost_parent=_crosspost_parent_id(submission),
     )
 
 
@@ -89,28 +109,46 @@ class RedditClient:
             raise RedditFetchError(f"failed to fetch history for u/{author}") from exc
 
     def fetch_bodies(self, post_ids: Sequence[str]) -> list[PostBody]:
-        """Fetch bodies, silently skipping posts that have since disappeared."""
+        """Fetch bodies, silently skipping posts that have since disappeared.
+
+        Real PRAW submissions are lazy: `reddit.submission(id=...)` never makes
+        an HTTP call by itself, only attribute access does. So `selftext` must be
+        read inside the same `try` as construction, or a deleted/missing post
+        would raise here (uncaught) instead of being skipped as promised.
+        """
         bodies: list[PostBody] = []
         for post_id in post_ids:
             try:
                 submission = self._reddit.submission(id=post_id)
+                selftext = submission.selftext
             except Exception:  # noqa: BLE001 - a gone post is expected, not exceptional
                 continue
-            bodies.append(PostBody(post_id=post_id, selftext=submission.selftext))
+            bodies.append(PostBody(post_id=post_id, selftext=selftext))
         return bodies
 
     def get_meta_by_id(self, post_id: str) -> PostMeta | None:
-        """Fetch one post's metadata directly by id. Returns None if it's gone."""
+        """Fetch one post's metadata directly by id. Returns None if it's gone.
+
+        `to_post_meta` reads attributes, which is what actually triggers the
+        lazy fetch for a real PRAW submission — it must stay inside the `try`.
+        """
         try:
             submission = self._reddit.submission(id=post_id)
+            return to_post_meta(submission)
         except Exception:  # noqa: BLE001 - a gone post is expected, not exceptional
             return None
-        return to_post_meta(submission)
 
     def check_available(self, post_id: str) -> bool:
-        """Report whether a post still exists upstream."""
+        """Report whether a post still exists upstream.
+
+        Constructing the submission object never touches the network for real
+        PRAW; only attribute access does. Force that fetch here so a deleted
+        post actually raises and gets caught, instead of this always reporting
+        `True`.
+        """
         try:
-            self._reddit.submission(id=post_id)
+            submission = self._reddit.submission(id=post_id)
+            _ = submission.title
         except Exception:  # noqa: BLE001
             return False
         return True

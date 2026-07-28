@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 import pytest
 
 from reddit_reader.reddit_client import (
@@ -5,7 +7,7 @@ from reddit_reader.reddit_client import (
     RedditFetchError,
     to_post_meta,
 )
-from tests.fakes import FakeReddit, make_submission
+from tests.fakes import FakeAuthor, FakeReddit, FakeSubreddit, LazyFetchTrap, make_submission
 
 
 @pytest.fixture
@@ -99,3 +101,55 @@ def test_fetch_listing_wraps_underlying_errors() -> None:
 
     with pytest.raises(RedditFetchError):
         RedditClient(Exploding()).fetch_listing("HFY", "new", limit=5)
+
+
+# --- Item 4: real PRAW submissions are lazy -----------------------------------
+#
+# `FakeReddit.submission()` never raises by itself (see tests/fakes.py); a
+# missing/deleted post only fails on attribute access, matching real PRAW. These
+# tests only pass if fetch_bodies/get_meta_by_id/check_available actually touch
+# an attribute inside their `try` blocks, not just the constructor call.
+
+
+def test_fetch_bodies_skips_a_post_that_fails_on_attribute_access(client: RedditClient) -> None:
+    reddit = FakeReddit(missing_ids={"gone"})
+    assert RedditClient(reddit).fetch_bodies(["gone"]) == []
+
+
+def test_get_meta_by_id_returns_none_for_a_post_that_fails_on_attribute_access() -> None:
+    reddit = FakeReddit(missing_ids={"gone"})
+    assert RedditClient(reddit).get_meta_by_id("gone") is None
+
+
+def test_check_available_forces_a_fetch_so_a_lazy_failure_is_caught() -> None:
+    reddit = FakeReddit(missing_ids={"gone"})
+    assert RedditClient(reddit).check_available("gone") is False
+
+
+# --- Item 5: crosspost_parent must not trigger a lazy fetch, and is normalized -
+
+
+def test_to_post_meta_does_not_trigger_a_fetch_to_read_crosspost_parent() -> None:
+    """`crosspost_parent` is deliberately absent from this fake's `__dict__`.
+
+    If `to_post_meta` used `getattr(submission, "crosspost_parent", None)`
+    instead of reading `__dict__` directly, this would raise (see
+    `LazyFetchTrap`) instead of returning `None`.
+    """
+    sub = LazyFetchTrap(
+        id="a1",
+        subreddit=FakeSubreddit(display_name="HFY"),
+        author=FakeAuthor(name="BlueFishcake"),
+        title="Road - Part 1",
+        permalink="/r/HFY/comments/a1/x/",
+        created_utc=datetime(2026, 1, 1, tzinfo=UTC).timestamp(),
+        score=10,
+    )
+    meta = to_post_meta(sub)
+    assert meta.crosspost_parent is None
+
+
+def test_to_post_meta_strips_the_t3_prefix_from_crosspost_parent() -> None:
+    sub = make_submission("b1", "Road - Part 1", crosspost_parent="t3_abc123")
+    meta = to_post_meta(sub)
+    assert meta.crosspost_parent == "abc123"
