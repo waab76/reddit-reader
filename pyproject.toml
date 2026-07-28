@@ -18,6 +18,7 @@ reddit-reader = "reddit_reader.cli:app"
 [dependency-groups]
 dev = [
     "pytest>=8.0",
+    "pytest-asyncio>=0.23",
     "ruff>=0.4",
     "mypy>=1.10",
 ]
@@ -52,3 +53,4 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_mode = "auto"
