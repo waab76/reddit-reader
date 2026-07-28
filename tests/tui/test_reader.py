@@ -1,7 +1,14 @@
+from pathlib import Path
+
 import pytest
 
+from reddit_reader.config import Settings
+from reddit_reader.reddit_client import RedditClient
 from reddit_reader.service import ReaderService
+from reddit_reader.storage import PostRepository, SearchIndex, StoryRepository, connect
+from reddit_reader.tui.app import RedditReaderApp
 from reddit_reader.tui.screens.reader import ReaderScreen
+from tests.fakes import FakeReddit, make_submission
 
 
 @pytest.fixture
@@ -97,3 +104,53 @@ def test_jumping_to_a_part_updates_the_index(populated: ReaderService, tracked_s
     screen = ReaderScreen(populated, tracked_story)
     screen.jump_to(1)
     assert screen.part_index == 1
+
+
+# --- Item 6: round part numbers must never render as scientific notation -----
+
+
+def test_heading_renders_round_part_numbers_without_scientific_notation(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "round.db")
+    service = ReaderService(
+        settings=Settings(subreddits=["HFY"], export_dir=tmp_path / "out"),
+        posts=PostRepository(conn),
+        stories=StoryRepository(conn),
+        search=SearchIndex(conn),
+        client=RedditClient(FakeReddit(submissions=[make_submission("p100", "Road - Part 100")])),
+    )
+    story_id = service.commit_match(service.fetch().candidates[0])
+    screen = ReaderScreen(service, story_id)
+    assert screen.heading() == "Part 100"
+    assert "E+" not in screen.heading()
+
+
+# --- Item 10: resuming a story must restore the saved fractional offset ------
+
+
+@pytest.mark.asyncio
+async def test_resuming_a_story_restores_the_saved_scroll_offset(
+    populated: ReaderService, tracked_story: int
+) -> None:
+    from textual.containers import VerticalScroll
+
+    story_id = tracked_story
+    # A long body so there's real scroll height to restore a fraction of.
+    from reddit_reader.models import PostBody
+
+    first_post_id = populated.ordered_parts(story_id)[0].post.id
+    populated.posts.set_body(
+        PostBody(post_id=first_post_id, selftext="\n\n".join(f"Paragraph {n}." for n in range(200)))
+    )
+    populated.mark_read(story_id, first_post_id, 0.6)
+
+    app = RedditReaderApp(populated)
+    async with app.run_test() as pilot:
+        screen = ReaderScreen(populated, story_id)
+        app.push_screen(screen)
+        await pilot.pause()
+        await pilot.pause()  # let call_after_refresh's scheduled callback run
+
+        scroll = screen.query_one("#body-scroll", VerticalScroll)
+        maximum = max(scroll.max_scroll_y, 1)
+        assert maximum > 0
+        assert scroll.scroll_y == pytest.approx(0.6 * maximum, abs=1.0)

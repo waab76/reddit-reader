@@ -11,7 +11,14 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Static
 
 from reddit_reader.models import CleaningRule
+from reddit_reader.ordering import format_part_number
+from reddit_reader.reddit_client import RedditError
 from reddit_reader.service import ReaderService
+
+# Cap how many gap numbers get joined into the displayed summary string — a
+# story with a title-parsing hiccup can otherwise render dozens of numbers into
+# one line.
+GAP_DISPLAY_LIMIT = 10
 
 
 class StoryDetailScreen(Screen[None]):
@@ -44,7 +51,7 @@ class StoryDetailScreen(Screen[None]):
         for group in self.service.ordered_groups(self.story_id):
             lead = group[0]
             if lead.parsed.part_number is not None:
-                label = f"Part {lead.parsed.part_number.normalize()}"
+                label = f"Part {format_part_number(lead.parsed.part_number)}"
             elif lead.parsed.part_label:
                 label = lead.parsed.part_label
             else:
@@ -67,7 +74,11 @@ class StoryDetailScreen(Screen[None]):
         gaps = self.service.gaps(self.story_id)
         if not gaps:
             return "No gaps detected."
-        return "Missing parts: " + ", ".join(str(g.normalize()) for g in gaps)
+        shown = gaps[:GAP_DISPLAY_LIMIT]
+        text = ", ".join(format_part_number(g) for g in shown)
+        if len(gaps) > GAP_DISPLAY_LIMIT:
+            text += f", … and {len(gaps) - GAP_DISPLAY_LIMIT} more"
+        return "Missing parts: " + text
 
     def can_find_missing(self) -> bool:
         """Only meaningful when gaps exist — otherwise no API calls are made at all."""
@@ -152,7 +163,11 @@ class StoryDetailScreen(Screen[None]):
         self.app.push_screen(ReaderScreen(self.service, self.story_id))
 
     def action_track(self) -> None:
-        count = self.do_track()
+        try:
+            count = self.do_track()
+        except RedditError as exc:
+            self._status(f"Tracking failed: {exc}")
+            return
         self._status(f"Tracked. Cached {count} bodies.")
         self.refresh_view()
 
@@ -165,7 +180,11 @@ class StoryDetailScreen(Screen[None]):
         if not self.can_find_missing():
             self._status("No gaps — nothing to find.")
             return
-        matches = self.service.find_missing_parts(self.story_id)
+        try:
+            matches = self.service.find_missing_parts(self.story_id)
+        except RedditError as exc:
+            self._status(f"Find missing failed: {exc}")
+            return
         self._status(f"Found {len(matches)} candidate groups from author history.")
         self.refresh_view()
 

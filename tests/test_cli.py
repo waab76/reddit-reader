@@ -8,7 +8,7 @@ from reddit_reader.config import Settings
 from reddit_reader.reddit_client import RedditClient
 from reddit_reader.service import ReaderService
 from reddit_reader.storage import PostRepository, SearchIndex, StoryRepository, connect
-from tests.fakes import FakeReddit, make_submission
+from tests.fakes import FakeListing, FakeReddit, make_submission
 
 runner = CliRunner()
 
@@ -71,3 +71,57 @@ def test_export_command_help_mentions_story() -> None:
 
 def test_list_command_help_runs() -> None:
     assert runner.invoke(app, ["list", "--help"]).exit_code == 0
+
+
+# --- Item 1: bare invocation must not crash -----------------------------------
+
+
+def test_bare_invocation_launches_the_tui_without_crashing(
+    monkeypatch: pytest.MonkeyPatch, service: ReaderService
+) -> None:
+    """Regression for `ctx.invoke(tui)` binding `config` to a `typer.OptionInfo`
+    object instead of `None`, which crashed `_read_config_file` with
+    "'bool' object is not callable" the moment any user ran `reddit-reader`
+    with no arguments."""
+    monkeypatch.setattr("reddit_reader.cli.build_service", lambda settings: service)
+
+    class FakeApp:
+        def __init__(self, service: ReaderService) -> None:
+            self.service = service
+
+        def run(self) -> None:
+            pass  # stand in for the real Textual event loop
+
+    monkeypatch.setattr("reddit_reader.tui.app.RedditReaderApp", FakeApp)
+
+    result = runner.invoke(app, [])
+
+    assert result.exception is None
+    assert result.exit_code == 0
+
+
+# --- Item 3: RedditError is caught cleanly, not left to crash as a traceback --
+
+
+def test_fetch_command_exits_cleanly_on_a_reddit_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class ExplodingReddit(FakeReddit):
+        def subreddit(self, name: str) -> FakeListing:
+            raise RuntimeError("rate limited")
+
+    conn = connect(tmp_path / "t.db")
+    broken_service = ReaderService(
+        settings=Settings(subreddits=["HFY"], export_dir=tmp_path / "out"),
+        posts=PostRepository(conn),
+        stories=StoryRepository(conn),
+        search=SearchIndex(conn),
+        client=RedditClient(ExplodingReddit()),
+    )
+    monkeypatch.setattr("reddit_reader.cli.build_service", lambda settings: broken_service)
+
+    result = runner.invoke(app, ["fetch"])
+
+    assert result.exit_code == 1
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert "failed" in result.stdout.lower() or "failed" in (result.stderr or "").lower()

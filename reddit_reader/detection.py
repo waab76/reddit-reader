@@ -11,7 +11,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from reddit_reader.dedupe import collapse_duplicates
+from reddit_reader.dedupe import DEFAULT_WINDOW_HOURS, collapse_duplicates
 from reddit_reader.models import DetectionMatch, PostMeta, Story
 from reddit_reader.ordering import resolve_order
 from reddit_reader.titles import ParsedTitle, parse_title
@@ -75,11 +75,27 @@ def _score(posts: Sequence[PostMeta], parsed: Sequence[ParsedTitle]) -> tuple[fl
 
 
 def group_posts(
-    posts: Sequence[PostMeta], subreddit_priority: Sequence[str]
+    posts: Sequence[PostMeta],
+    subreddit_priority: Sequence[str],
+    window_hours: int = DEFAULT_WINDOW_HOURS,
 ) -> list[DetectionMatch]:
     """Collapse duplicates, then group the survivors into candidate series."""
-    groups = collapse_duplicates(posts, subreddit_priority)
+    groups = collapse_duplicates(posts, subreddit_priority, window_hours=window_hours)
     canonical = [group.canonical for group in groups]
+
+    # Per canonical post, which alternate (mirrored/crossposted) ids were
+    # collapsed into it, so the resulting StoryPart can cite them later instead
+    # of silently discarding them.
+    alternates_by_canonical: dict[str, list[str]] = {
+        group.canonical.id: [alt.id for alt in group.alternates]
+        for group in groups
+        if group.alternates
+    }
+
+    def _alternates_for(post_ids: Sequence[str]) -> dict[str, list[str]]:
+        return {
+            pid: alternates_by_canonical[pid] for pid in post_ids if pid in alternates_by_canonical
+        }
 
     buckets: dict[tuple[str, str, int | None], list[tuple[PostMeta, ParsedTitle]]] = {}
     solo: list[tuple[PostMeta, ParsedTitle]] = []
@@ -99,14 +115,16 @@ def group_posts(
         group_posts_list = [part.post for part in ordered]
         group_parsed = [part.parsed for part in ordered]
         confidence, reasons = _score(group_posts_list, group_parsed)
+        post_ids = [p.id for p in group_posts_list]
         matches.append(
             DetectionMatch(
                 base_title=base_title,
                 author=group_posts_list[0].author,
                 volume=volume,
-                post_ids=[p.id for p in group_posts_list],
+                post_ids=post_ids,
                 confidence=confidence,
                 reasons=reasons,
+                alternate_post_ids=_alternates_for(post_ids),
             )
         )
 
@@ -120,6 +138,7 @@ def group_posts(
                 post_ids=[post.id],
                 confidence=confidence,
                 reasons=[*reasons, "author is [deleted]; grouping requires review"],
+                alternate_post_ids=_alternates_for([post.id]),
             )
         )
 
@@ -137,13 +156,23 @@ class AttachDecision(BaseModel):
     confidence: float
 
 
+# A mis-parsed title can produce a spurious part number in the thousands or
+# millions (e.g. matching a stray number in the text as a "part"). Without a
+# cap, `find_gaps` would iterate `range(1, that_number)` — potentially millions
+# of `Decimal` allocations — on every redraw of Story List, freezing the TUI.
+# No real serial runs anywhere near this many parts.
+MAX_GAP_SEARCH = 1000
+
+
 def find_gaps(
     part_numbers: Sequence[Decimal], unavailable: Sequence[Decimal] = ()
 ) -> list[Decimal]:
     """Return whole-number parts missing from the start of, or inside, the sequence.
 
     Trailing parts are deliberately not gaps: newer installments arrive via an
-    ordinary refresh and need no author-history lookup.
+    ordinary refresh and need no author-history lookup. The search is capped at
+    `MAX_GAP_SEARCH`, so a spuriously large parsed part number can't hang the
+    caller — gaps past the cap are simply not reported.
     """
     whole = sorted({n for n in part_numbers if n == n.to_integral_value()})
     if not whole:
@@ -152,10 +181,11 @@ def find_gaps(
     suppressed = set(unavailable)
     highest = max(whole)
     present = set(whole)
+    upper_bound = min(int(highest), MAX_GAP_SEARCH)
 
     missing = [
         Decimal(candidate)
-        for candidate in range(1, int(highest))
+        for candidate in range(1, upper_bound)
         if Decimal(candidate) not in present and Decimal(candidate) not in suppressed
     ]
     return missing

@@ -10,6 +10,7 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Input, Static
 
 from reddit_reader.models import PostMeta
+from reddit_reader.reddit_client import RedditError
 from reddit_reader.service import ReaderService
 
 
@@ -91,5 +92,16 @@ class SearchScreen(Screen[None]):
         self.refresh_rows()
 
     def action_search_live(self) -> None:
-        self.do_live_search(self._query())
+        try:
+            self.do_live_search(self._query())
+        except RedditError as exc:
+            self.query_one("#status", Static).update(f"Live search failed: {exc}")
+            return
         self.refresh_rows()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """`Input` consumes Enter itself (bound to `submit`) before the
+        screen-level `Binding("enter", "search_local", ...)` ever fires, so the
+        screen binding alone is dead while the query field is focused. This
+        message handler is what actually runs the search on Enter."""
+        self.action_search_local()

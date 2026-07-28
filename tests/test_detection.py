@@ -114,3 +114,35 @@ def test_single_post_still_produces_a_match() -> None:
     matches = group_posts([post("a", "The Long Road - Part 1")], PRIORITY)
     assert len(matches) == 1
     assert matches[0].post_ids == ["a"]
+
+
+# --- Item 9: alternate (collapsed duplicate) ids must survive onto the match --
+
+
+def test_alternates_are_recorded_on_the_canonical_post_id() -> None:
+    mirror = post("b", "The Long Road - Part 1", days=0).model_copy(update={"subreddit": "Mirror"})
+    matches = group_posts([post("a", "The Long Road - Part 1", days=0), mirror], PRIORITY)
+    assert matches[0].post_ids == ["a"]
+    assert matches[0].alternate_post_ids == {"a": ["b"]}
+
+
+# --- Item 11: Settings.dedupe_window_hours must actually change grouping -----
+
+
+def test_group_posts_respects_a_configured_dedupe_window() -> None:
+    a = post("a", "The Long Road - Chapter 1", days=0)
+    b = post("b", "The Long Road - Chapter 1", days=0).model_copy(
+        update={"subreddit": "Mirror", "created_utc": a.created_utc + timedelta(hours=2)}
+    )
+
+    # Default window (48h): 2 hours apart collapses into one canonical post
+    # with "b" recorded as an alternate.
+    default_match = group_posts([a, b], ["HFY", "Mirror"])[0]
+    assert default_match.post_ids == ["a"]
+    assert default_match.alternate_post_ids.get("a") == ["b"]
+
+    # A configured window narrower than the gap between them must stop the
+    # collapse: both posts survive as separate canonical entries in one match.
+    narrow_match = group_posts([a, b], ["HFY", "Mirror"], window_hours=1)[0]
+    assert set(narrow_match.post_ids) == {"a", "b"}
+    assert narrow_match.alternate_post_ids == {}

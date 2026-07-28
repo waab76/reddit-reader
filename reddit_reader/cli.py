@@ -8,7 +8,7 @@ import typer
 
 from reddit_reader.config import Settings, build_reddit, load_settings
 from reddit_reader.models import Story
-from reddit_reader.reddit_client import RedditClient
+from reddit_reader.reddit_client import RedditClient, RedditError
 from reddit_reader.service import ReaderService
 from reddit_reader.storage import PostRepository, SearchIndex, StoryRepository, connect
 
@@ -67,7 +67,11 @@ def fetch(
         fetch_limit=limit,
     )
     service = build_service(settings)
-    result = service.fetch()
+    try:
+        result = service.fetch()
+    except RedditError as exc:
+        typer.echo(f"Reddit fetch failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
     typer.echo(
         f"Fetched {result.fetched} posts. "
         f"Auto-attached {result.auto_attached} new parts. "
@@ -129,4 +133,9 @@ def tui(
 def main(ctx: typer.Context) -> None:
     """Launch the TUI when no subcommand is given."""
     if ctx.invoked_subcommand is None:
-        ctx.invoke(tui)
+        # Call the plain function directly rather than `ctx.invoke(tui)`: typer's
+        # `ctx.invoke` does not fill in defaults for parameters it isn't given, so
+        # `config` would bind to its raw `typer.OptionInfo` default object instead
+        # of `None`, crashing config.py's `_read_config_file` with a confusing
+        # "'bool' object is not callable".
+        tui(config=None)

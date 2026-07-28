@@ -1,9 +1,12 @@
 from datetime import UTC, datetime
 
 import pytest
+from textual.widgets import DataTable, Input, Static
 
 from reddit_reader.models import DetectionMatch, PostMeta
-from reddit_reader.service import ReaderService
+from reddit_reader.reddit_client import RedditFetchError
+from reddit_reader.service import FetchResult, ReaderService
+from reddit_reader.tui.app import RedditReaderApp
 from reddit_reader.tui.screens.browse import BrowseScreen
 from reddit_reader.tui.screens.curation import CurationScreen
 from reddit_reader.tui.screens.search import SearchScreen
@@ -148,8 +151,6 @@ def test_storage_delete_removes_the_story(service: ReaderService) -> None:
 
 @pytest.mark.asyncio
 async def test_every_screen_mounts_without_error(populated: ReaderService) -> None:
-    from reddit_reader.tui.app import RedditReaderApp
-
     app = RedditReaderApp(populated)
     async with app.run_test() as pilot:
         app.push_screen(BrowseScreen(populated))
@@ -160,3 +161,76 @@ async def test_every_screen_mounts_without_error(populated: ReaderService) -> No
         app.pop_screen()
         app.push_screen(StorageAdminScreen(populated))
         await pilot.pause()
+
+
+# --- Item 2: Enter must actually run the search, not just call do_local_search -
+#
+# `Input` binds Enter to `submit` itself and consumes the keypress before the
+# screen-level `Binding("enter", "search_local", ...)` ever fires. A test that
+# calls `screen.do_local_search()` directly can't catch this — it has to press
+# the key through a real Pilot session, on a mounted (and thus focused) input.
+
+
+@pytest.mark.asyncio
+async def test_pressing_enter_in_the_query_field_runs_a_search(populated: ReaderService) -> None:
+    app = RedditReaderApp(populated)
+    async with app.run_test() as pilot:
+        app.push_screen(SearchScreen(populated))
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, SearchScreen)
+
+        input_widget = screen.query_one("#query", Input)
+        input_widget.focus()
+        input_widget.value = "Long Road"
+        await pilot.press("enter")
+
+        assert screen.results
+        assert screen.query_one("#results", DataTable).row_count == len(screen.results)
+
+
+# --- Item 3: RedditError must be caught and shown, not left to crash the app --
+
+
+@pytest.mark.asyncio
+async def test_action_fetch_shows_a_status_message_instead_of_crashing(
+    populated: ReaderService,
+) -> None:
+    def _boom() -> FetchResult:  # noqa: RUF100
+        raise RedditFetchError("network down")
+
+    app = RedditReaderApp(populated)
+    async with app.run_test() as pilot:
+        app.push_screen(BrowseScreen(populated))
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, BrowseScreen)
+        screen.do_fetch = _boom  # type: ignore[method-assign]
+
+        screen.action_fetch()
+        await pilot.pause()
+
+        status_text = str(screen.query_one("#status", Static).content)
+        assert "failed" in status_text.lower()
+
+
+@pytest.mark.asyncio
+async def test_live_search_shows_a_status_message_instead_of_crashing(
+    populated: ReaderService,
+) -> None:
+    def _boom(query: str, subreddit: str | None = None) -> list[PostMeta]:
+        raise RedditFetchError("rate limited")
+
+    app = RedditReaderApp(populated)
+    async with app.run_test() as pilot:
+        app.push_screen(SearchScreen(populated))
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, SearchScreen)
+        screen.do_live_search = _boom  # type: ignore[method-assign]
+
+        screen.action_search_live()
+        await pilot.pause()
+
+        status_text = str(screen.query_one("#status", Static).content)
+        assert "failed" in status_text.lower()

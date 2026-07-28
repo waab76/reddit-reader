@@ -5,14 +5,14 @@ Both the CLI and the TUI call into here, so neither holds business logic.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
 from pydantic import BaseModel
 
-from reddit_reader.cleaning import detect_boilerplate
+from reddit_reader.cleaning import detect_boilerplate, strip_patterns
 from reddit_reader.config import Settings
 from reddit_reader.detection import (
     decide_attachment,
@@ -94,12 +94,18 @@ class ReaderService:
                     self.settings.time_window,
                 )
             )
+            # Record this subreddit's own fetch state as soon as its listing
+            # succeeds, so each subreddit's position is independent of whether a
+            # later one in the batch fails.
+            self.posts.record_fetch(subreddit, datetime.now(UTC))
 
         self.posts.upsert_many(collected)
         for post in collected:
             self.search.index_title(post)
 
-        matches = group_posts(collected, self.settings.subreddits)
+        matches = group_posts(
+            collected, self.settings.subreddits, window_hours=self.settings.dedupe_window_hours
+        )
 
         auto_attached = 0
         candidates: list[DetectionMatch] = []
@@ -130,7 +136,9 @@ class ReaderService:
         story = self.stories.get(story_id)
         read_key = self._read_sort_key(story_id) if story else None
 
-        for part in self._build_parts(story_id, match.post_ids, match.confidence):
+        for part in self._build_parts(
+            story_id, match.post_ids, match.confidence, match.alternate_post_ids
+        ):
             if part.post_id not in new_ids:
                 continue
             # A part landing behind the read position can never be flagged unread by
@@ -151,10 +159,15 @@ class ReaderService:
         return len(new_ids)
 
     def _build_parts(
-        self, story_id: int, post_ids: Sequence[str], confidence: float
+        self,
+        story_id: int,
+        post_ids: Sequence[str],
+        confidence: float,
+        alternate_post_ids: Mapping[str, Sequence[str]] | None = None,
     ) -> list[StoryPart]:
         metas = self.posts.get_many(list(post_ids))
         ordered = resolve_order([(m, parse_title(m.title)) for m in metas])
+        alternates = alternate_post_ids or {}
         return [
             StoryPart(
                 post_id=item.post.id,
@@ -164,6 +177,7 @@ class ReaderService:
                 segment=item.parsed.segment,
                 segment_count=item.parsed.segment_count,
                 sort_key=item.sort_key,
+                alternate_post_ids=list(alternates.get(item.post.id, [])),
                 match_confidence=confidence,
             )
             for item in ordered
@@ -181,7 +195,9 @@ class ReaderService:
                 last_updated_at=datetime.now(UTC),
             )
         )
-        for part in self._build_parts(story_id, match.post_ids, match.confidence):
+        for part in self._build_parts(
+            story_id, match.post_ids, match.confidence, match.alternate_post_ids
+        ):
             self.stories.add_part(part)
         return story_id
 
@@ -361,7 +377,9 @@ class ReaderService:
         candidates: list[DetectionMatch] = []
         found_numbers: set[Decimal] = set()
 
-        for match in group_posts(history, self.settings.subreddits):
+        for match in group_posts(
+            history, self.settings.subreddits, window_hours=self.settings.dedupe_window_hours
+        ):
             if series_key(match.author, match.base_title) != target_key:
                 continue
             if match.volume != story.volume:
@@ -404,7 +422,13 @@ class ReaderService:
             if (body := self.posts.get_body(post_id)) is not None
         }
 
-        content = render_markdown(story, groups, bodies, self._rules_for(story_id))
+        content = render_markdown(
+            story,
+            groups,
+            bodies,
+            self._rules_for(story_id),
+            strip_known_patterns=self.settings.cleaning_enabled,
+        )
         path = self.settings.export_dir / export_filename(story)
         write_export(path, content)
 
@@ -418,7 +442,12 @@ class ReaderService:
         if story is None:
             raise ValueError(f"no story with id {story_id}")
 
-        content = render_links(story, self.ordered_groups(story_id))
+        alternates: dict[str, list[PostMeta]] = {}
+        for part in self.stories.parts(story_id):
+            if part.alternate_post_ids:
+                alternates[part.post_id] = self.posts.get_many(part.alternate_post_ids)
+
+        content = render_links(story, self.ordered_groups(story_id), alternates)
         path = self.settings.export_dir / export_filename(story).replace(".md", "-links.md")
         write_export(path, content)
         return path
@@ -477,9 +506,19 @@ class ReaderService:
     # ---- learned cleaning -------------------------------------------------------
 
     def propose_cleaning_rules(self, story_id: int) -> list[CleaningRule]:
-        """Detect repeated headers/footers. Returns proposals only — never applied."""
+        """Detect repeated headers/footers. Returns proposals only — never applied.
+
+        Detection runs over `strip_patterns()` output, not the raw body: `clean()`
+        strips known patterns (nav links, plugs, sign-offs) *before* applying a
+        learned rule, so a learned block must be discovered against that same
+        pattern-stripped text. Otherwise a block that overlapped pattern-stripped
+        content (a nav-link line immediately above a recurring header, the most
+        common real HFY shape) would be learned against text that no longer
+        exists at apply time, and `apply_rules`'s line-for-line match would
+        silently strip nothing.
+        """
         bodies = [
-            body.selftext
+            strip_patterns(body.selftext)
             for post_id in self.stories.part_post_ids(story_id)
             if (body := self.posts.get_body(post_id)) is not None
         ]

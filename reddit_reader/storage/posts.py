@@ -128,3 +128,23 @@ class PostRepository:
         )
         self.conn.commit()
         return cursor.rowcount
+
+    def record_fetch(self, subreddit: str, when: datetime) -> None:
+        """Stamp a subreddit's own `fetch_state` row so refreshing it doesn't
+        disturb another subreddit's position."""
+        self.conn.execute(
+            """
+            INSERT INTO fetch_state (subreddit, last_fetched) VALUES (?, ?)
+            ON CONFLICT (subreddit) DO UPDATE SET last_fetched = excluded.last_fetched
+            """,
+            (subreddit, when.isoformat()),
+        )
+        self.conn.commit()
+
+    def last_fetched(self, subreddit: str) -> datetime | None:
+        row = self.conn.execute(
+            "SELECT last_fetched FROM fetch_state WHERE subreddit = ?", (subreddit,)
+        ).fetchone()
+        if row is None or row["last_fetched"] is None:
+            return None
+        return datetime.fromisoformat(row["last_fetched"])

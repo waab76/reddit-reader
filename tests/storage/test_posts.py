@@ -91,3 +91,32 @@ def test_delete_meta_removes_rows(repo: PostRepository) -> None:
     assert repo.delete_meta(["a1"]) == 1
     assert repo.get_meta("a1") is None
     assert repo.get_meta("a2") is not None
+
+
+# --- Item 11: fetch_state is now actually read/written, per subreddit --------
+
+
+def test_last_fetched_is_none_before_any_fetch(repo: PostRepository) -> None:
+    assert repo.last_fetched("HFY") is None
+
+
+def test_record_fetch_then_last_fetched_roundtrips(repo: PostRepository) -> None:
+    when = datetime(2026, 3, 1, 12, 0, tzinfo=UTC)
+    repo.record_fetch("HFY", when)
+    assert repo.last_fetched("HFY") == when
+
+
+def test_record_fetch_is_independent_per_subreddit(repo: PostRepository) -> None:
+    first = datetime(2026, 3, 1, tzinfo=UTC)
+    second = datetime(2026, 3, 2, tzinfo=UTC)
+    repo.record_fetch("HFY", first)
+    repo.record_fetch("Sexyspacebabes", second)
+    assert repo.last_fetched("HFY") == first
+    assert repo.last_fetched("Sexyspacebabes") == second
+
+
+def test_record_fetch_overwrites_the_previous_stamp(repo: PostRepository) -> None:
+    repo.record_fetch("HFY", datetime(2026, 3, 1, tzinfo=UTC))
+    later = datetime(2026, 3, 5, tzinfo=UTC)
+    repo.record_fetch("HFY", later)
+    assert repo.last_fetched("HFY") == later

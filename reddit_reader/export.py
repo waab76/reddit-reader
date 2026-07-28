@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
-from decimal import Decimal
 from pathlib import Path
 
 from reddit_reader.cleaning import clean
-from reddit_reader.models import CleaningRule, Story
-from reddit_reader.ordering import OrderedPart
+from reddit_reader.models import CleaningRule, PostMeta, Story
+from reddit_reader.ordering import OrderedPart, format_part_number
 
 _UNSAFE_RE = re.compile(r"[^\w\s-]")
 _WS_RE = re.compile(r"\s+")
@@ -28,24 +27,10 @@ def export_filename(story: Story) -> str:
     return f"{name}.md"
 
 
-def _format_number(value: Decimal) -> str:
-    """Render a part number without trailing zeros, never in scientific notation.
-
-    `Decimal.normalize()` collapses whole numbers like 10 or 100 to scientific
-    notation ("1E+1", "1E+2"), which would render as "Part 1E+2" instead of
-    "Part 100". Whole numbers are formatted as plain integers; only genuinely
-    fractional numbers (e.g. 12.50) go through `normalize()` to drop trailing
-    zeros, which is safe there since the exponent stays non-positive.
-    """
-    if value == value.to_integral_value():
-        return str(int(value))
-    return str(value.normalize())
-
-
 def _label(group: Sequence[OrderedPart]) -> str:
     lead = group[0]
     if lead.parsed.part_number is not None:
-        number = _format_number(lead.parsed.part_number)
+        number = format_part_number(lead.parsed.part_number)
         return f"Part {number}"
     if lead.parsed.part_label:
         return lead.parsed.part_label
@@ -64,26 +49,51 @@ def render_markdown(
     groups: Sequence[Sequence[OrderedPart]],
     bodies: Mapping[str, str],
     rules: Sequence[CleaningRule],
+    *,
+    strip_known_patterns: bool = True,
 ) -> str:
-    """Regenerate the complete story file from scratch."""
+    """Regenerate the complete story file from scratch.
+
+    `strip_known_patterns` mirrors `Settings.cleaning_enabled` (the reader
+    screen already respects this setting; export previously always stripped
+    regardless of it).
+    """
     chunks: list[str] = [f"# {story.title}", f"*by {story.author}*"]
 
     for group in groups:
         chunks.append(part_heading(group))
-        segment_texts = [clean(bodies.get(part.post.id, ""), rules) for part in group]
+        segment_texts = [
+            clean(bodies.get(part.post.id, ""), rules, strip_known_patterns=strip_known_patterns)
+            for part in group
+        ]
         chunks.append("\n\n".join(t for t in segment_texts if t))
 
     return "\n\n".join(chunk for chunk in chunks if chunk).strip() + "\n"
 
 
-def render_links(story: Story, groups: Sequence[Sequence[OrderedPart]]) -> str:
-    """A lightweight reading index of permalinks, flagging any that are dead."""
+def render_links(
+    story: Story,
+    groups: Sequence[Sequence[OrderedPart]],
+    alternates: Mapping[str, Sequence[PostMeta]] | None = None,
+) -> str:
+    """A lightweight reading index of permalinks, flagging any that are dead.
+
+    `alternates` maps a canonical post's id to the mirrored/crossposted copies
+    that were collapsed into it, so a duplicate isn't just discarded — the
+    index can still cite it as an alternate source.
+    """
+    alternates = alternates or {}
     lines: list[str] = [f"# {story.title}", f"*by {story.author}*", ""]
 
     for group in groups:
         for part in group:
             note = "" if part.post.available else "  *(unavailable — post removed)*"
-            lines.append(f"- {_label(group)}: [{part.post.title}]({part.post.url}){note}")
+            line = f"- {_label(group)}: [{part.post.title}]({part.post.url}){note}"
+            alts = alternates.get(part.post.id)
+            if alts:
+                mirrors = ", ".join(f"[mirror]({alt.url})" for alt in alts)
+                line += f"  (also: {mirrors})"
+            lines.append(line)
 
     return "\n".join(lines).strip() + "\n"
 

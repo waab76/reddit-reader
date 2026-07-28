@@ -134,6 +134,15 @@ def test_links_export_flags_dead_permalinks() -> None:
     assert "unavailable" in render_links(a_story(), groups).lower()  # type: ignore[arg-type]
 
 
+def test_links_export_cites_alternate_mirrors() -> None:
+    """Item 9: a collapsed duplicate/mirror must still be citeable from the
+    links export, not silently discarded."""
+    groups = groups_for(post("a", "Road - Part 1"))
+    mirror = post("m1", "Road - Part 1 [mirror]")
+    links = render_links(a_story(), groups, {"a": [mirror]})  # type: ignore[arg-type]
+    assert "/comments/m1/" in links
+
+
 def test_write_export_creates_parent_directories(tmp_path: Path) -> None:
     target = tmp_path / "nested" / "out.md"
     write_export(target, "# Hello")

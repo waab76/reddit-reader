@@ -155,3 +155,97 @@ def test_propose_cleaning_rules_needs_enough_parts(tmp_path: Path) -> None:
     story_id = service.commit_match(service.fetch().candidates[0])
     service.track(story_id)
     assert service.propose_cleaning_rules(story_id) == []
+
+
+# --- Item 7: Settings.cleaning_enabled must actually reach the export path ---
+
+
+def test_export_with_cleaning_disabled_keeps_pattern_matched_lines(tmp_path: Path) -> None:
+    """`render_markdown` used to always call `clean()` with its default
+    `strip_known_patterns=True`, ignoring `cleaning_enabled`. A Patreon-plug
+    line should survive an export when cleaning is turned off, matching what
+    the reader screen already does."""
+    conn = connect(tmp_path / "t.db")
+    service = ReaderService(
+        settings=Settings(subreddits=["HFY"], export_dir=tmp_path / "out", cleaning_enabled=False),
+        posts=PostRepository(conn),
+        stories=StoryRepository(conn),
+        search=SearchIndex(conn),
+        client=RedditClient(FakeReddit(submissions=[make_submission("a1", "Road - Part 1")])),
+    )
+    story_id = service.commit_match(service.fetch().candidates[0])
+    service.track(story_id)
+    service.posts.set_body(
+        __import__("reddit_reader.models", fromlist=["PostBody"]).PostBody(
+            post_id="a1",
+            selftext="Story text.\n\nSupport me on [Patreon](https://patreon.com/x)!",
+        )
+    )
+
+    path = service.export_story(story_id)
+
+    assert "patreon" in path.read_text().lower()
+
+
+def test_export_with_cleaning_enabled_still_strips_known_patterns(tmp_path: Path) -> None:
+    service = build(tmp_path, make_submission("a1", "Road - Part 1"))
+    story_id = service.commit_match(service.fetch().candidates[0])
+    service.track(story_id)
+    service.posts.set_body(
+        __import__("reddit_reader.models", fromlist=["PostBody"]).PostBody(
+            post_id="a1",
+            selftext="Story text.\n\nSupport me on [Patreon](https://patreon.com/x)!",
+        )
+    )
+
+    path = service.export_story(story_id)
+
+    assert "patreon" not in path.read_text().lower()
+
+
+# --- Item 8: learned-rule proposal must align with what clean() actually sees -
+
+
+def test_learned_rule_survives_a_leading_nav_line(tmp_path: Path) -> None:
+    """`clean()` strips known patterns (nav links, plugs, sign-offs) BEFORE
+    applying a learned rule, so a learned block has to be discovered against
+    that same pattern-stripped text. `propose_cleaning_rules` used to run
+    detection over the raw body instead, so a recurring header immediately
+    following a nav-link line — the single most common real HFY boilerplate
+    shape — would be learned as "nav line + header" and then never match the
+    already-nav-stripped text `clean()` hands `apply_rules`, silently leaving
+    the header in place."""
+    from reddit_reader.cleaning import clean
+    from reddit_reader.models import CleaningPosition, PostBody
+
+    def body(chapter: int) -> str:
+        return (
+            "[First](https://redd.it/aaa) | [Prev](https://redd.it/bbb) | "
+            "[Next](https://redd.it/ccc)\n"
+            f"*The Long Road, Chapter {chapter}*\n"
+            "A Blue Fishcake production.\n"
+            "\n"
+            f"Story content unique to chapter {chapter} goes here."
+        )
+
+    service = build(
+        tmp_path,
+        make_submission("a1", "Road - Part 1", created_days=0),
+        make_submission("a2", "Road - Part 2", created_days=1),
+        make_submission("a3", "Road - Part 3", created_days=2),
+    )
+    story_id = service.commit_match(service.fetch().candidates[0])
+    service.track(story_id)
+    for n, post_id in enumerate(service.stories.part_post_ids(story_id), start=1):
+        service.posts.set_body(PostBody(post_id=post_id, selftext=body(n)))
+
+    rules = service.propose_cleaning_rules(story_id)
+    leading = next(r for r in rules if r.position == CleaningPosition.LEADING)
+    leading.approved = True
+    rule_id = service.stories.add_cleaning_rule(leading)
+    service.stories.set_rule_decision(rule_id, True)
+
+    cleaned = clean(body(1), service.stories.cleaning_rules(story_id))
+
+    assert "Blue Fishcake production" not in cleaned
+    assert "unique to chapter 1" in cleaned

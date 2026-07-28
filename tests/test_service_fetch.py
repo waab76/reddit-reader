@@ -35,6 +35,14 @@ def test_fetch_stores_post_metadata(service: ReaderService) -> None:
     assert service.posts.get_meta("a1") is not None
 
 
+def test_fetch_records_fetch_state_for_each_subreddit(service: ReaderService) -> None:
+    """Item 11: refreshing one subreddit is supposed to leave its own fetch
+    state behind, independent of any other configured subreddit."""
+    assert service.posts.last_fetched("HFY") is None
+    service.fetch()
+    assert service.posts.last_fetched("HFY") is not None
+
+
 def test_fetch_does_not_store_bodies(service: ReaderService) -> None:
     service.fetch()
     assert service.posts.get_body("a1") is None
@@ -192,6 +200,40 @@ def test_nav_expansion_ignores_parts_already_in_the_story(service: ReaderService
 def test_nav_expansion_is_empty_for_untracked_stories(service: ReaderService) -> None:
     story_id = service.commit_match(service.fetch().candidates[0])
     assert service.nav_link_expansion(story_id) == []
+
+
+def test_crosspost_pair_collapses_to_one_part_with_alternate_recorded(tmp_path: Path) -> None:
+    """Item 9: a collapsed duplicate/mirror must be recorded as an alternate on
+    the surviving StoryPart, not silently discarded — and that has to survive a
+    write/read round trip through storage, not just live in memory."""
+    conn = connect(tmp_path / "dup.db")
+    reddit = FakeReddit(
+        submissions=[
+            make_submission("m1", "Road - Part 1", created_days=0, subreddit_name="HFY"),
+            make_submission(
+                "m1x",
+                "Road - Part 1",
+                created_days=0,
+                subreddit_name="RoadMirror",
+                crosspost_parent="t3_m1",
+            ),
+        ]
+    )
+    svc = ReaderService(
+        settings=Settings(subreddits=["HFY", "RoadMirror"], export_dir=tmp_path / "out"),
+        posts=PostRepository(conn),
+        stories=StoryRepository(conn),
+        search=SearchIndex(conn),
+        client=RedditClient(reddit),
+    )
+    story_id = svc.commit_match(svc.fetch().candidates[0])
+    parts = svc.stories.parts(story_id)
+    assert len(parts) == 1
+    assert parts[0].alternate_post_ids == ["m1x"]
+
+    # Round-trip: read it back fresh from storage, not the in-memory object.
+    reloaded = svc.stories.parts(story_id)
+    assert reloaded[0].alternate_post_ids == ["m1x"]
 
 
 def test_nav_expansion_fetches_metadata_for_a_candidate_not_yet_cached(

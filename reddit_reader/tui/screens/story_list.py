@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from decimal import Decimal
 from typing import ClassVar
 
 from textual.app import ComposeResult
@@ -10,9 +12,26 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Static
 
 from reddit_reader.models import Story
+from reddit_reader.ordering import format_part_number
 from reddit_reader.service import ReaderService
 
 SORT_KEYS = ("series", "score", "parts", "recent")
+
+# Cap how many gap numbers get joined into the "Gaps" table cell — a story with
+# a title-parsing hiccup can otherwise render dozens of comma-separated numbers
+# into one cell.
+GAP_DISPLAY_LIMIT = 10
+
+
+def format_gap_cell(gaps: Sequence[Decimal]) -> str:
+    """The "Gaps" table cell text: truncated, and never scientific notation."""
+    if not gaps:
+        return "-"
+    shown = gaps[:GAP_DISPLAY_LIMIT]
+    text = ", ".join(format_part_number(g) for g in shown)
+    if len(gaps) > GAP_DISPLAY_LIMIT:
+        text += f", +{len(gaps) - GAP_DISPLAY_LIMIT} more"
+    return text
 
 
 class StoryListScreen(Screen[None]):
@@ -117,7 +136,7 @@ class StoryListScreen(Screen[None]):
                 self.service.story_status(story).value,
                 "yes" if story.tracked else "no",
                 str(self.service.unread_count(story.id)),
-                ", ".join(str(g) for g in gaps) if gaps else "-",
+                format_gap_cell(gaps),
                 str(len(filled)) if filled else "-",
                 key=str(story.id),
             )
@@ -151,6 +170,13 @@ class StoryListScreen(Screen[None]):
         story_id = self._selected_story_id()
         if story_id is not None:
             self.app.push_screen(StoryDetailScreen(self.service, story_id))
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        """`DataTable` consumes Enter itself (bound to `select_cursor`) before the
+        screen-level `Binding("enter", "open", ...)` ever fires, so the screen
+        binding alone is dead on a focused table. This message handler is what
+        actually makes Enter open the selected story."""
+        self.action_open()
 
     def action_browse(self) -> None:
         from reddit_reader.tui.screens.browse import BrowseScreen

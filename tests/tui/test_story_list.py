@@ -1,8 +1,10 @@
+from decimal import Decimal
+
 import pytest
 
 from reddit_reader.service import ReaderService
 from reddit_reader.tui.app import RedditReaderApp
-from reddit_reader.tui.screens.story_list import StoryListScreen
+from reddit_reader.tui.screens.story_list import StoryListScreen, format_gap_cell
 
 
 @pytest.mark.asyncio
@@ -80,3 +82,41 @@ def test_volumes_of_one_serial_sort_together(populated: ReaderService) -> None:
     screen.set_sort("series")
     keys = [s.series_key for s in screen.visible_stories()]
     assert keys == sorted(keys)
+
+
+# --- Item 2: Enter must actually navigate, not just call the wrapped method ---
+#
+# `DataTable` binds Enter to `select_cursor` itself and consumes the keypress
+# before the screen-level `Binding("enter", "open", ...)` ever fires. A test
+# that calls `screen.action_open()` directly can't catch this — it has to press
+# the key through a real Pilot session, on a mounted (and thus focused) table.
+
+
+@pytest.mark.asyncio
+async def test_pressing_enter_on_a_row_opens_story_detail(populated: ReaderService) -> None:
+    from reddit_reader.tui.screens.story_detail import StoryDetailScreen
+
+    app = RedditReaderApp(populated)
+    async with app.run_test() as pilot:
+        assert isinstance(app.screen, StoryListScreen)
+        await pilot.press("down", "enter")
+        assert isinstance(app.screen, StoryDetailScreen)
+
+
+# --- Item 6 / 12: gap cell formatting -----------------------------------------
+
+
+def test_gap_cell_avoids_scientific_notation_for_round_numbers() -> None:
+    assert format_gap_cell([Decimal("100")]) == "100"
+    assert "E+" not in format_gap_cell([Decimal("100")])
+
+
+def test_gap_cell_truncates_long_gap_lists() -> None:
+    gaps = [Decimal(n) for n in range(1, 100)]
+    cell = format_gap_cell(gaps)
+    assert cell.count(",") < len(gaps)
+    assert "more" in cell
+
+
+def test_gap_cell_is_a_dash_when_there_are_no_gaps() -> None:
+    assert format_gap_cell([]) == "-"

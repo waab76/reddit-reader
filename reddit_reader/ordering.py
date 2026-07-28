@@ -21,6 +21,23 @@ _ANCHOR_WIDTH = 8
 _ANCHOR_PRECISION = 3
 
 
+def format_part_number(value: Decimal) -> str:
+    """Render a part number without trailing zeros, never in scientific notation.
+
+    `Decimal.normalize()` collapses whole numbers like 10 or 100 to scientific
+    notation ("1E+1", "1E+2"), which would render as "Part 1E+2" instead of
+    "Part 100". Whole numbers are formatted as plain integers; only genuinely
+    fractional numbers (e.g. 12.50) go through `normalize()` to drop trailing
+    zeros, which is safe there since the exponent stays non-positive.
+
+    Shared by `export.py` and every TUI screen that renders a part number, so
+    the fix only has to happen once.
+    """
+    if value == value.to_integral_value():
+        return str(int(value))
+    return str(value.normalize())
+
+
 class OrderedPart(BaseModel):
     """A post with its resolved position in a story."""
 

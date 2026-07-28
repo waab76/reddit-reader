@@ -1,7 +1,23 @@
 from decimal import Decimal
+from pathlib import Path
 
+from reddit_reader.config import Settings
+from reddit_reader.reddit_client import RedditClient
 from reddit_reader.service import ReaderService
+from reddit_reader.storage import PostRepository, SearchIndex, StoryRepository, connect
 from reddit_reader.tui.screens.story_detail import StoryDetailScreen
+from tests.fakes import FakeReddit, make_submission
+
+
+def _build_service(tmp_path: Path, db_name: str, *submissions: object) -> ReaderService:
+    conn = connect(tmp_path / db_name)
+    return ReaderService(
+        settings=Settings(subreddits=["HFY"], export_dir=tmp_path / "out"),
+        posts=PostRepository(conn),
+        stories=StoryRepository(conn),
+        search=SearchIndex(conn),
+        client=RedditClient(FakeReddit(submissions=list(submissions))),  # type: ignore[arg-type]
+    )
 
 
 def test_part_rows_list_every_part(populated: ReaderService, multi_part_story_id: int) -> None:
@@ -86,3 +102,51 @@ def test_part_rows_flag_newly_filled_parts(
     populated.stories.conn.commit()
     screen = StoryDetailScreen(populated, story_id)
     assert any("new" in row[2].lower() for row in screen.part_rows())
+
+
+# --- Item 6: round part numbers must never render as scientific notation -----
+
+
+def test_part_rows_render_round_numbers_without_scientific_notation(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, "round.db", make_submission("p100", "Road - Part 100"))
+    story_id = service.commit_match(service.fetch().candidates[0])
+    screen = StoryDetailScreen(service, story_id)
+    labels = [row[0] for row in screen.part_rows()]
+    assert labels == ["Part 100"]
+    assert not any("E+" in label for label in labels)
+
+
+def test_gap_summary_renders_round_numbers_without_scientific_notation(tmp_path: Path) -> None:
+    service = _build_service(
+        tmp_path,
+        "gap100.db",
+        make_submission("p1", "Road - Part 1", created_days=0),
+        make_submission("p101", "Road - Part 101", created_days=1),
+    )
+    story_id = service.commit_match(service.fetch().candidates[0])
+    # Suppress every gap except the round number under test (100), so it's
+    # guaranteed to survive the item-12 display truncation and appear in the
+    # summary intact.
+    for number in range(2, 100):
+        service.mark_unavailable(story_id, Decimal(number), auto=True)
+    screen = StoryDetailScreen(service, story_id)
+    summary = screen.gap_summary()
+    assert "100" in summary
+    assert "E+" not in summary
+
+
+# --- Item 12: the gap summary must be truncated, not one giant comma list ----
+
+
+def test_gap_summary_truncates_long_gap_lists(tmp_path: Path) -> None:
+    service = _build_service(
+        tmp_path,
+        "biggap.db",
+        make_submission("p1", "Road - Part 1", created_days=0),
+        make_submission("p50", "Road - Part 50", created_days=1),
+    )
+    story_id = service.commit_match(service.fetch().candidates[0])
+    screen = StoryDetailScreen(service, story_id)
+    summary = screen.gap_summary()
+    assert "more" in summary
+    assert summary.count(",") < 48

@@ -2,6 +2,7 @@ from decimal import Decimal
 
 from reddit_reader.detection import (
     DEFAULT_ATTACH_THRESHOLD,
+    MAX_GAP_SEARCH,
     decide_attachment,
     find_gaps,
 )
@@ -50,6 +51,16 @@ def test_partially_unavailable_gap_still_reports_the_rest() -> None:
 
 def test_duplicate_numbers_do_not_break_gap_detection() -> None:
     assert find_gaps(d("1", "2", "2", "4")) == d("3")
+
+
+def test_find_gaps_caps_the_search_for_a_spuriously_huge_part_number() -> None:
+    """A mis-parsed title can produce a part number in the millions. Without a
+    cap, this would iterate `range(1, 10_000_000)` — millions of `Decimal`
+    allocations — on every redraw of Story List. It must return quickly and
+    never report more than `MAX_GAP_SEARCH` gaps."""
+    result = find_gaps(d("1", "10000000"))
+    assert len(result) <= MAX_GAP_SEARCH
+    assert len(result) == MAX_GAP_SEARCH - 2
 
 
 def test_high_confidence_match_on_existing_story_auto_attaches() -> None:

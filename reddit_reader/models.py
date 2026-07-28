@@ -110,3 +110,8 @@ class DetectionMatch(BaseModel):
     confidence: float
     reasons: list[str] = Field(default_factory=list)
     existing_story_id: int | None = None
+    # Non-canonical duplicate/mirrored post ids collapsed into each canonical
+    # post in `post_ids`, keyed by that canonical post's id. Threaded through to
+    # `StoryPart.alternate_post_ids` so a collapsed mirror is recorded rather
+    # than silently discarded.
+    alternate_post_ids: dict[str, list[str]] = Field(default_factory=dict)

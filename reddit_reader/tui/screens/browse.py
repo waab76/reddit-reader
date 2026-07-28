@@ -9,6 +9,7 @@ from textual.binding import BindingType
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Static
 
+from reddit_reader.reddit_client import RedditError
 from reddit_reader.service import FetchResult, ReaderService
 
 LISTINGS = ("new", "hot", "top")
@@ -85,7 +86,11 @@ class BrowseScreen(Screen[None]):
         )
 
     def action_fetch(self) -> None:
-        result = self.do_fetch()
+        try:
+            result = self.do_fetch()
+        except RedditError as exc:
+            self.query_one("#status", Static).update(f"Fetch failed: {exc}")
+            return
         self.refresh_rows()
         self.query_one("#status", Static).update(
             f"Fetched {result.fetched}, auto-attached {result.auto_attached}, "
