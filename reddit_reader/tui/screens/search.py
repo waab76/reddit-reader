@@ -12,6 +12,7 @@ from textual.widgets import DataTable, Footer, Header, Input, Static
 from reddit_reader.models import PostMeta
 from reddit_reader.reddit_client import RedditError
 from reddit_reader.service import ReaderService
+from reddit_reader.tui.navigation import open_post
 
 
 class SearchScreen(Screen[None]):
@@ -20,6 +21,7 @@ class SearchScreen(Screen[None]):
     BINDINGS: ClassVar[list[BindingType]] = [
         ("enter", "search_local", "Search cache"),
         ("ctrl+r", "search_live", "Search Reddit"),
+        ("o", "open_selected", "Open"),
         ("escape", "app.back", "Back"),
     ]
 
@@ -40,28 +42,7 @@ class SearchScreen(Screen[None]):
 
     def open_for_post(self, post_id: str) -> None:
         """Jump to the story containing this post, or curate its detected series."""
-        for story in self.service.stories.all_stories():
-            if post_id in self.service.stories.part_post_ids(story.id):
-                from reddit_reader.tui.screens.story_detail import StoryDetailScreen
-
-                self.app.push_screen(StoryDetailScreen(self.service, story.id))
-                return
-
-        meta = self.service.posts.get_meta(post_id)
-        if meta is None:
-            return
-
-        from reddit_reader.detection import group_posts
-        from reddit_reader.tui.screens.curation import CurationScreen
-
-        author_posts = self.service.posts.by_author(meta.author)
-        candidates = [
-            match
-            for match in group_posts(author_posts, self.service.settings.subreddits)
-            if post_id in match.post_ids
-        ]
-        if candidates:
-            self.app.push_screen(CurationScreen(self.service, candidates))
+        open_post(self, self.service, post_id)
 
     # ---- rendering --------------------------------------------------------------
 
@@ -79,6 +60,11 @@ class SearchScreen(Screen[None]):
 
     def _query(self) -> str:
         return self.query_one("#query", Input).value
+
+    def _selected_post_id(self) -> str | None:
+        table = self.query_one("#results", DataTable)
+        row_key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key
+        return str(row_key.value) if row_key.value else None
 
     def refresh_rows(self) -> None:
         table = self.query_one("#results", DataTable)
@@ -105,3 +91,21 @@ class SearchScreen(Screen[None]):
         screen binding alone is dead while the query field is focused. This
         message handler is what actually runs the search on Enter."""
         self.action_search_local()
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        """`DataTable` consumes Enter itself (bound to `select_cursor`) before the
+        screen-level `Binding("enter", "search_local", ...)` ever fires, so
+        selecting a result row was previously dead. This message handler is what
+        actually turns Enter-on-a-row into `open_for_post`."""
+        post_id = self._selected_post_id()
+        if post_id is not None:
+            self.open_for_post(post_id)
+
+    def action_open_selected(self) -> None:
+        """Explicit fallback for `o`: some terminals never deliver a DataTable's
+        Enter-triggered `RowSelected` message (observed over SSH on at least one
+        Linux setup), leaving row selection unreachable. This binding opens the
+        highlighted row directly, independent of that message."""
+        post_id = self._selected_post_id()
+        if post_id is not None:
+            self.open_for_post(post_id)

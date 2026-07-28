@@ -1,16 +1,21 @@
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from textual.widgets import DataTable, Input, Static
 
+from reddit_reader.config import Settings
 from reddit_reader.models import DetectionMatch, PostMeta
-from reddit_reader.reddit_client import RedditFetchError
+from reddit_reader.reddit_client import RedditClient, RedditFetchError
 from reddit_reader.service import FetchResult, ReaderService
+from reddit_reader.storage import PostRepository, SearchIndex, StoryRepository, connect
 from reddit_reader.tui.app import RedditReaderApp
 from reddit_reader.tui.screens.browse import BrowseScreen
 from reddit_reader.tui.screens.curation import CurationScreen
 from reddit_reader.tui.screens.search import SearchScreen
 from reddit_reader.tui.screens.storage_admin import StorageAdminScreen
+from reddit_reader.tui.screens.story_detail import StoryDetailScreen
+from tests.fakes import FakeReddit
 
 
 def test_browse_fetch_returns_a_result(service: ReaderService) -> None:
@@ -187,6 +192,156 @@ async def test_pressing_enter_in_the_query_field_runs_a_search(populated: Reader
 
         assert screen.results
         assert screen.query_one("#results", DataTable).row_count == len(screen.results)
+
+
+# --- Selecting a search result must actually open something -------------------
+#
+# `DataTable` binds Enter to `select_cursor` and consumes the keypress before
+# any screen-level binding fires. `open_for_post` existed but nothing called
+# it, so pressing Enter on a result row silently did nothing.
+
+
+@pytest.mark.asyncio
+async def test_selecting_an_uncommitted_result_opens_curation(service: ReaderService) -> None:
+    service.fetch()
+    app = RedditReaderApp(service)
+    async with app.run_test() as pilot:
+        app.push_screen(SearchScreen(service))
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, SearchScreen)
+
+        screen.do_local_search("Long Road")
+        screen.refresh_rows()
+        screen.query_one("#results", DataTable).focus()
+        await pilot.pause()
+        await pilot.press("enter")
+
+        assert isinstance(app.screen, CurationScreen)
+
+
+@pytest.mark.asyncio
+async def test_selecting_a_tracked_result_jumps_to_its_story(populated: ReaderService) -> None:
+    app = RedditReaderApp(populated)
+    async with app.run_test() as pilot:
+        app.push_screen(SearchScreen(populated))
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, SearchScreen)
+
+        screen.do_local_search("Long Road")
+        screen.refresh_rows()
+        screen.query_one("#results", DataTable).focus()
+        await pilot.pause()
+        await pilot.press("enter")
+
+        assert isinstance(app.screen, StoryDetailScreen)
+
+
+# --- 'o' is an explicit fallback for selecting a row, independent of whether --
+# the terminal actually delivers DataTable's Enter-triggered `RowSelected`
+# message (observed to silently fail over one real SSH setup on Linux, despite
+# arrow-key navigation and keyboard focus both working normally).
+
+
+@pytest.mark.asyncio
+async def test_pressing_o_opens_curation_for_a_search_result(service: ReaderService) -> None:
+    service.fetch()
+    app = RedditReaderApp(service)
+    async with app.run_test() as pilot:
+        app.push_screen(SearchScreen(service))
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, SearchScreen)
+
+        screen.do_local_search("Long Road")
+        screen.refresh_rows()
+        screen.query_one("#results", DataTable).focus()
+        await pilot.pause()
+        await pilot.press("o")
+
+        assert isinstance(app.screen, CurationScreen)
+
+
+@pytest.mark.asyncio
+async def test_pressing_o_opens_a_browse_row(populated: ReaderService) -> None:
+    from reddit_reader.tui.screens.browse import BrowseScreen
+
+    app = RedditReaderApp(populated)
+    async with app.run_test() as pilot:
+        app.push_screen(BrowseScreen(populated))
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, BrowseScreen)
+
+        screen.query_one("#posts", DataTable).focus()
+        await pilot.pause()
+        await pilot.press("o")
+
+        # `populated`'s posts are already committed into stories, so the
+        # highlighted row's post opens straight to its story.
+        assert isinstance(app.screen, StoryDetailScreen)
+
+
+# --- open_for_post must honor the configured dedupe window, not a hardcoded --
+# default. `group_posts` defaults `window_hours` to 48 when not passed
+# explicitly; `ReaderService.fetch` threads `settings.dedupe_window_hours`
+# through, but `open_for_post` was calling `group_posts` without it, so a
+# repost/mirror further apart than 48h (but within the user's configured
+# window) would attach as a separate duplicate part instead of collapsing.
+
+
+@pytest.mark.asyncio
+async def test_open_for_post_uses_the_configured_dedupe_window(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "t.db")
+    settings = Settings(
+        subreddits=["HFY", "Mirror"], export_dir=tmp_path / "out", dedupe_window_hours=96
+    )
+    service = ReaderService(
+        settings=settings,
+        posts=PostRepository(conn),
+        stories=StoryRepository(conn),
+        search=SearchIndex(conn),
+        client=RedditClient(FakeReddit()),
+    )
+    # 72 hours apart: outside the 48h default, inside the configured 96h window.
+    service.posts.upsert_many(
+        [
+            PostMeta(
+                id="a1",
+                subreddit="HFY",
+                author="BlueFishcake",
+                title="The Long Road - Part 1",
+                permalink="/r/HFY/comments/a1/x/",
+                created_utc=datetime(2026, 1, 1, tzinfo=UTC),
+                score=1,
+            ),
+            PostMeta(
+                id="a2",
+                subreddit="Mirror",
+                author="BlueFishcake",
+                title="The Long Road - Part 1",
+                permalink="/r/Mirror/comments/a2/x/",
+                created_utc=datetime(2026, 1, 4, tzinfo=UTC),
+                score=1,
+            ),
+        ]
+    )
+
+    app = RedditReaderApp(service)
+    async with app.run_test() as pilot:
+        app.push_screen(SearchScreen(service))
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, SearchScreen)
+
+        screen.open_for_post("a1")
+        await pilot.pause()
+
+        assert isinstance(app.screen, CurationScreen)
+        candidate = app.screen.candidates[0]
+        assert set(candidate.post_ids) == {"a1"}
+        assert candidate.alternate_post_ids.get("a1") == ["a2"]
 
 
 # --- Item 3: RedditError must be caught and shown, not left to crash the app --
