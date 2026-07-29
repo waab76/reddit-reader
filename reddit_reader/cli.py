@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import typer
 
 from reddit_reader.config import Settings, build_reddit, load_settings
+from reddit_reader.logging_setup import configure_logging
 from reddit_reader.models import Story
 from reddit_reader.reddit_client import RedditClient, RedditError
 from reddit_reader.service import ReaderService
@@ -17,9 +19,12 @@ app = typer.Typer(
     no_args_is_help=False,
 )
 
+logger = logging.getLogger(__name__)
+
 
 def build_service(settings: Settings) -> ReaderService:
     """Wire storage, the Reddit client, and the service together."""
+    configure_logging(settings)
     conn = connect(settings.database_path)
     return ReaderService(
         settings=settings,
@@ -70,6 +75,7 @@ def fetch(
     try:
         result = service.fetch()
     except RedditError as exc:
+        logger.exception("fetch command failed")
         typer.echo(f"Reddit fetch failed: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     typer.echo(

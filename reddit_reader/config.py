@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     database_path: Path = Path("~/.local/share/reddit-reader/library.db")
     export_dir: Path = Path("~/reddit-reader-exports")
 
+    log_path: Path = Path("~/.local/share/reddit-reader/reddit-reader.log")
+    log_level: str = "INFO"
+
     listing: ListingType = "new"
     time_window: TimeWindow = "all"
     fetch_limit: int = 100
@@ -51,7 +54,7 @@ class Settings(BaseSettings):
             return [part.strip() for part in value.split(",") if part.strip()]
         return value
 
-    @field_validator("database_path", "export_dir", mode="after")
+    @field_validator("database_path", "export_dir", "log_path", mode="after")
     @classmethod
     def _expand(cls, value: Path) -> Path:
         return value.expanduser()

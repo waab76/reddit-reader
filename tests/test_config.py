@@ -99,3 +99,19 @@ def test_subreddit_order_is_preserved_for_dedupe_priority() -> None:
 def test_paths_expand_user(tmp_path: Path) -> None:
     settings = Settings(database_path="~/rr.db")  # type: ignore[arg-type]
     assert "~" not in str(settings.database_path)
+
+
+def test_log_path_defaults_next_to_the_database() -> None:
+    settings = load_settings()
+    assert settings.log_path.name == "reddit-reader.log"
+    assert settings.log_level == "INFO"
+
+
+def test_log_path_expands_user() -> None:
+    settings = Settings(log_path="~/rr.log")  # type: ignore[arg-type]
+    assert "~" not in str(settings.log_path)
+
+
+def test_log_level_is_overridable_via_config_file(tmp_path: Path) -> None:
+    path = write_config(tmp_path, 'log_level = "DEBUG"\n')
+    assert load_settings(config_path=path).log_level == "DEBUG"

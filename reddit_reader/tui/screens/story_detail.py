@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import ClassVar
 
@@ -14,6 +15,8 @@ from reddit_reader.models import CleaningRule
 from reddit_reader.ordering import format_part_number
 from reddit_reader.reddit_client import RedditError
 from reddit_reader.service import ReaderService
+
+logger = logging.getLogger(__name__)
 
 # Cap how many gap numbers get joined into the displayed summary string — a
 # story with a title-parsing hiccup can otherwise render dozens of numbers into
@@ -166,6 +169,7 @@ class StoryDetailScreen(Screen[None]):
         try:
             count = self.do_track()
         except RedditError as exc:
+            logger.warning("tracking failed: %s", exc)
             self._status(f"Tracking failed: {exc}")
             return
         self._status(f"Tracked. Cached {count} bodies.")
@@ -183,6 +187,7 @@ class StoryDetailScreen(Screen[None]):
         try:
             matches = self.service.find_missing_parts(self.story_id)
         except RedditError as exc:
+            logger.warning("find missing failed: %s", exc)
             self._status(f"Find missing failed: {exc}")
             return
         self._status(f"Found {len(matches)} candidate groups.")

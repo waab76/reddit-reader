@@ -5,6 +5,7 @@ Both the CLI and the TUI call into here, so neither holds business logic.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -42,6 +43,8 @@ from reddit_reader.storage import PostRepository, SearchIndex, StoryRepository
 from reddit_reader.titles import parse_title
 
 COMPLETION_MARKERS = ("[complete]", "[final]", "[fin]", "the end")
+
+logger = logging.getLogger(__name__)
 
 
 class FetchResult(BaseModel):
@@ -83,6 +86,9 @@ class ReaderService:
     def fetch(self, subreddits: Sequence[str] | None = None) -> FetchResult:
         """Fetch listings, store metadata, auto-attach known parts, return candidates."""
         targets = list(subreddits or self.settings.subreddits)
+        logger.info(
+            "fetch: %s (%s, limit=%d)", targets, self.settings.listing, self.settings.fetch_limit
+        )
         collected: list[PostMeta] = []
 
         for subreddit in targets:
@@ -122,6 +128,12 @@ class ReaderService:
                 match.existing_story_id = decision.story_id
                 candidates.append(match)
 
+        logger.info(
+            "fetch: %d posts, %d auto-attached, %d candidates",
+            len(collected),
+            auto_attached,
+            len(candidates),
+        )
         return FetchResult(
             fetched=len(collected), auto_attached=auto_attached, candidates=candidates
         )
@@ -161,6 +173,7 @@ class ReaderService:
                 # New parts arrived: re-run the nav pass over the enlarged story.
                 self.nav_link_expansion(story_id)
 
+        logger.info("attach_parts: story=%d +%d parts", story_id, len(new_ids))
         return len(new_ids)
 
     def _build_parts(
@@ -204,6 +217,13 @@ class ReaderService:
             story_id, match.post_ids, match.confidence, match.alternate_post_ids
         ):
             self.stories.add_part(part)
+        logger.info(
+            "commit_match: story=%d author=%s title=%r (%d parts)",
+            story_id,
+            match.author,
+            match.display_title,
+            len(match.post_ids),
+        )
         return story_id
 
     # ---- tracking ---------------------------------------------------------------
@@ -236,6 +256,7 @@ class ReaderService:
 
         # Bodies are local now, so the nav-link pass costs nothing but CPU.
         self.nav_link_expansion(story_id)
+        logger.info("track: story=%d cached %d bodies", story_id, len(bodies))
         return len(bodies)
 
     def nav_link_expansion(self, story_id: int) -> list[str]:
@@ -281,6 +302,7 @@ class ReaderService:
         if story:
             story.tracked = False
             self.stories.update(story)
+        logger.info("untrack: story=%d dropped %d bodies", story_id, dropped)
         return dropped
 
     # ---- reading state ----------------------------------------------------------
@@ -321,6 +343,7 @@ class ReaderService:
         story.last_read_offset = offset
         self.stories.update(story)
         self.stories.clear_newly_filled(story_id, post_id)
+        logger.debug("mark_read: story=%d post=%s offset=%.3f", story_id, post_id, offset)
 
     # ---- status -----------------------------------------------------------------
 
@@ -357,9 +380,11 @@ class ReaderService:
         self.stories.add_unavailable(
             UnavailablePart(story_id=story_id, part_number=part_number, auto_marked=auto)
         )
+        logger.debug("mark_unavailable: story=%d part=%s auto=%s", story_id, part_number, auto)
 
     def clear_unavailable(self, story_id: int, part_number: Decimal) -> None:
         self.stories.clear_unavailable(story_id, part_number)
+        logger.debug("clear_unavailable: story=%d part=%s", story_id, part_number)
 
     def find_missing_parts(self, story_id: int) -> list[DetectionMatch]:
         """Pull author history to backfill gaps. Only meaningful when gaps exist."""
@@ -370,6 +395,8 @@ class ReaderService:
         story = self.stories.get(story_id)
         if story is None:
             return []
+
+        logger.info("find_missing_parts: story=%d gaps=%s", story_id, missing)
 
         history = self.client.author_submissions(story.author)
         self.posts.upsert_many(history)
@@ -415,10 +442,16 @@ class ReaderService:
                         found_numbers.add(parsed.part_number)
 
         # Anything nothing could produce is unfillable.
-        for number in missing:
-            if number not in found_numbers:
-                self.mark_unavailable(story_id, number, auto=True)
+        unfilled = [number for number in missing if number not in found_numbers]
+        for number in unfilled:
+            self.mark_unavailable(story_id, number, auto=True)
 
+        logger.info(
+            "find_missing_parts: story=%d found %d candidates, %d unfillable",
+            story_id,
+            len(candidates),
+            len(unfilled),
+        )
         return candidates
 
     def _find_via_adjacent_links(
@@ -528,6 +561,7 @@ class ReaderService:
         story.exported_markdown_path = str(path)
         story.exported_at = datetime.now(UTC)
         self.stories.update(story)
+        logger.info("export_story: story=%d -> %s", story_id, path)
         return path
 
     def export_links_file(self, story_id: int) -> Path:
@@ -543,6 +577,7 @@ class ReaderService:
         content = render_links(story, self.ordered_groups(story_id), alternates)
         path = self.settings.export_dir / export_filename(story).replace(".md", "-links.md")
         write_export(path, content)
+        logger.info("export_links_file: story=%d -> %s", story_id, path)
         return path
 
     # ---- search -----------------------------------------------------------------
@@ -558,6 +593,7 @@ class ReaderService:
         self.posts.upsert_many(found)
         for post in found:
             self.search.index_title(post)
+        logger.debug("search_live: %r -> %d results", query, len(found))
         return found
 
     # ---- storage management -----------------------------------------------------
@@ -569,13 +605,16 @@ class ReaderService:
         for post_id in post_ids:
             self.search.remove_body(post_id)
         self.stories.delete(story_id)
+        logger.info("delete_story: story=%d (%d parts)", story_id, len(post_ids))
 
     def prune_orphans(self) -> int:
         """Clear cached metadata belonging to no story."""
         orphans = self.posts.orphaned_ids()
         for post_id in orphans:
             self.search.remove(post_id)
-        return self.posts.delete_meta(orphans)
+        removed = self.posts.delete_meta(orphans)
+        logger.info("prune_orphans: removed %d", removed)
+        return removed
 
     def storage_usage(self) -> StorageUsage:
         counts = self.posts.conn.execute(
@@ -621,7 +660,7 @@ class ReaderService:
             majority=self.settings.cleaning_majority,
             min_parts=self.settings.cleaning_min_parts,
         )
-        return [
+        rules = [
             CleaningRule(
                 story_id=story_id,
                 position=block.position,
@@ -630,3 +669,5 @@ class ReaderService:
             )
             for block in blocks
         ]
+        logger.debug("propose_cleaning_rules: story=%d proposed %d", story_id, len(rules))
+        return rules

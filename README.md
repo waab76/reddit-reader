@@ -166,8 +166,13 @@ All commands accept `--config path/to/file.toml`.
   read progress, curation state.
 - **Exports**: `~/reddit-reader-exports/` — Markdown story files and links
   indexes, named `<author>-<title>[-vol<N>].md`.
+- **Log file**: `~/.local/share/reddit-reader/reddit-reader.log` — a rotating
+  log (5 files, 5 MB each) of every fetch, track, export, delete, and Reddit
+  API failure. The TUI owns the terminal, so nothing is ever printed to
+  stdout/stderr while it's running; this is the only place to look when
+  something goes wrong. Set `log_level = "DEBUG"` for per-request detail.
 
-Both paths are configurable — see `config.sample.toml`.
+All three paths are configurable — see `config.sample.toml`.
 
 ## Development
 

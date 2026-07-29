@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import ClassVar
 
 from textual.app import ComposeResult
@@ -14,6 +15,8 @@ from reddit_reader.reddit_client import RedditError
 from reddit_reader.service import ReaderService
 from reddit_reader.tui.navigation import open_post
 from reddit_reader.tui.screens import TITLE_COLUMN_WIDTH
+
+logger = logging.getLogger(__name__)
 
 
 class SearchScreen(Screen[None]):
@@ -85,6 +88,7 @@ class SearchScreen(Screen[None]):
         try:
             self.do_live_search(self._query())
         except RedditError as exc:
+            logger.warning("live search failed: %s", exc)
             self.query_one("#status", Static).update(f"Live search failed: {exc}")
             return
         self.refresh_rows()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import ClassVar
 
 from textual.app import ComposeResult
@@ -15,6 +16,8 @@ from reddit_reader.tui.navigation import open_post
 from reddit_reader.tui.screens import TITLE_COLUMN_WIDTH
 
 LISTINGS = ("new", "hot", "top")
+
+logger = logging.getLogger(__name__)
 
 
 class BrowseScreen(Screen[None]):
@@ -63,7 +66,12 @@ class BrowseScreen(Screen[None]):
             entries.append(
                 (
                     meta.id,
-                    (meta.author, meta.subreddit, meta.title, "yes" if meta.id in grouped else "no"),
+                    (
+                        meta.author,
+                        meta.subreddit,
+                        meta.title,
+                        "yes" if meta.id in grouped else "no",
+                    ),
                 )
             )
         return entries
@@ -109,6 +117,7 @@ class BrowseScreen(Screen[None]):
         try:
             result = self.do_fetch()
         except RedditError as exc:
+            logger.warning("fetch failed: %s", exc)
             self.query_one("#status", Static).update(f"Fetch failed: {exc}")
             return
         self.refresh_rows()

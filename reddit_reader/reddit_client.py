@@ -7,6 +7,7 @@ PRAW exists.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -17,6 +18,8 @@ ListingType = Literal["new", "hot", "top"]
 TimeWindow = Literal["day", "week", "month", "year", "all"]
 
 DELETED_AUTHOR = "[deleted]"
+
+logger = logging.getLogger(__name__)
 
 
 class RedditError(Exception):
@@ -79,6 +82,7 @@ class RedditClient:
         limit: int,
         time_window: TimeWindow = "all",
     ) -> list[PostMeta]:
+        logger.debug("fetch_listing r/%s (%s, limit=%d)", subreddit, listing, limit)
         try:
             source = self._reddit.subreddit(subreddit)
             if listing == "top":
@@ -91,21 +95,26 @@ class RedditClient:
         except RedditError:
             raise
         except Exception as exc:
+            logger.warning("fetch_listing r/%s (%s) failed: %s", subreddit, listing, exc)
             raise RedditFetchError(f"failed to fetch r/{subreddit} ({listing})") from exc
 
     def search(self, query: str, subreddit: str | None = None, limit: int = 50) -> list[PostMeta]:
         target = subreddit or "all"
+        logger.debug("search r/%s for %r (limit=%d)", target, query, limit)
         try:
             source = self._reddit.subreddit(target)
             return [to_post_meta(s) for s in source.search(query, limit=limit)]
         except Exception as exc:
+            logger.warning("search r/%s for %r failed: %s", target, query, exc)
             raise RedditFetchError(f"search failed in r/{target}") from exc
 
     def author_submissions(self, author: str, limit: int | None = None) -> list[PostMeta]:
+        logger.debug("author_submissions u/%s (limit=%s)", author, limit)
         try:
             redditor = self._reddit.redditor(author)
             return [to_post_meta(s) for s in redditor.submissions.new(limit=limit)]
         except Exception as exc:
+            logger.warning("author_submissions u/%s failed: %s", author, exc)
             raise RedditFetchError(f"failed to fetch history for u/{author}") from exc
 
     def fetch_bodies(self, post_ids: Sequence[str]) -> list[PostBody]:
@@ -121,7 +130,8 @@ class RedditClient:
             try:
                 submission = self._reddit.submission(id=post_id)
                 selftext = submission.selftext
-            except Exception:  # noqa: BLE001 - a gone post is expected, not exceptional
+            except Exception as exc:  # noqa: BLE001 - a gone post is expected, not exceptional
+                logger.debug("fetch_bodies: %s unavailable (%s)", post_id, exc)
                 continue
             bodies.append(PostBody(post_id=post_id, selftext=selftext))
         return bodies
@@ -135,7 +145,8 @@ class RedditClient:
         try:
             submission = self._reddit.submission(id=post_id)
             return to_post_meta(submission)
-        except Exception:  # noqa: BLE001 - a gone post is expected, not exceptional
+        except Exception as exc:  # noqa: BLE001 - a gone post is expected, not exceptional
+            logger.debug("get_meta_by_id: %s unavailable (%s)", post_id, exc)
             return None
 
     def check_available(self, post_id: str) -> bool:
@@ -149,6 +160,7 @@ class RedditClient:
         try:
             submission = self._reddit.submission(id=post_id)
             _ = submission.title
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("check_available: %s unavailable (%s)", post_id, exc)
             return False
         return True

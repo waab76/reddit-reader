@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import ClassVar
 
 from textual.app import App
@@ -9,6 +10,8 @@ from textual.binding import BindingType
 
 from reddit_reader.service import ReaderService
 from reddit_reader.tui.screens.story_list import StoryListScreen
+
+logger = logging.getLogger(__name__)
 
 
 class RedditReaderApp(App[None]):
@@ -30,6 +33,7 @@ class RedditReaderApp(App[None]):
         self.service = service
 
     def on_mount(self) -> None:
+        logger.info("app started")
         self.push_screen(StoryListScreen(self.service))
 
     async def action_back(self) -> None:

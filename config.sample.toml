@@ -27,6 +27,18 @@ subreddits = ["HFY"]
 # Where exported Markdown/links files are written.
 # export_dir = "~/reddit-reader-exports"
 
+# --- Logging --------------------------------------------------------------
+
+# Where the app's log file is written. A rotating file (5 files, 5 MB each)
+# since the TUI itself owns the terminal — nothing is ever printed to
+# stdout/stderr while it's running.
+# log_path = "~/.local/share/reddit-reader/reddit-reader.log"
+
+# Standard Python logging level: DEBUG, INFO, WARNING, ERROR, or CRITICAL.
+# DEBUG adds per-request Reddit API calls; INFO covers every user-triggered
+# operation (fetch, track, export, delete, ...).
+# log_level = "INFO"
+
 # Default listing type for `fetch` / Browse: "new", "hot", or "top".
 # Routine refreshes should stay "new" (keeps up with recent posts); switch
 # to "top" for a one-off sweep of a subreddit's back catalog.
