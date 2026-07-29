@@ -99,3 +99,11 @@ def test_title_with_no_marker_yields_no_number() -> None:
 
 def test_base_title_normalizes_whitespace_and_punctuation() -> None:
     assert parse_title("The   Long Road!! -- Part 2").base_title == "the long road"
+
+
+def test_per_part_subtitle_does_not_leak_into_base_title() -> None:
+    first = parse_title("A Multipart Story - Part 1 The First Part of the Story")
+    second = parse_title("A Multipart Story - Part 2 The Story Continues")
+    assert first.base_title == second.base_title == "a multipart story"
+    assert first.part_number == Decimal("1")
+    assert second.part_number == Decimal("2")

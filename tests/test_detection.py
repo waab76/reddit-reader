@@ -35,6 +35,18 @@ def test_posts_of_one_serial_group_together() -> None:
     assert set(matches[0].post_ids) == {"a", "b"}
 
 
+def test_posts_with_differing_per_part_subtitles_still_group() -> None:
+    matches = group_posts(
+        [
+            post("a", "A Multipart Story - Part 1 The First Part of the Story", days=0),
+            post("b", "A Multipart Story - Part 2 The Story Continues", days=7),
+        ],
+        PRIORITY,
+    )
+    assert len(matches) == 1
+    assert set(matches[0].post_ids) == {"a", "b"}
+
+
 def test_different_authors_do_not_group() -> None:
     matches = group_posts(
         [

@@ -37,6 +37,22 @@ _NAMED_PART_RE = re.compile(
 _CONT_RE = re.compile(r"\(?\b(?:cont\.?|continued)\b\)?", re.IGNORECASE)
 _PUNCT_RE = re.compile(r"[^\w\s]")
 _WS_RE = re.compile(r"\s+")
+_SUBTITLE_STOP_RE = re.compile(r"[\[(]")
+
+
+def _strip_marker_and_subtitle(working: str, match: re.Match[str]) -> str:
+    """Remove a part/chapter marker plus any per-part subtitle trailing it.
+
+    Posts in the same series are often titled "<Base Title> - Part N <subtitle
+    unique to this part>" (e.g. "Part 3 Homecoming"). Left in place, that
+    subtitle text would leak into `base_title` and make otherwise-identical
+    series fail to group since every part's title differs after the marker.
+    Stop at the next bracketed tag/fraction segment (e.g. "[OC]", "(2/2)") so
+    those are left for their own regexes to pick up.
+    """
+    stop = _SUBTITLE_STOP_RE.search(working, match.end())
+    end = stop.start() if stop else len(working)
+    return working[: match.start()] + " " + working[end:]
 
 
 class ParsedTitle(BaseModel):
@@ -103,7 +119,7 @@ def parse_title(raw: str) -> ParsedTitle:
         except InvalidOperation:
             part_number = None
         part_label = numeric_match.group(0).strip()
-        working = working[: numeric_match.start()] + " " + working[numeric_match.end() :]
+        working = _strip_marker_and_subtitle(working, numeric_match)
 
     if part_number is None:
         word_match = _WORD_PART_RE.search(working)
@@ -115,7 +131,7 @@ def parse_title(raw: str) -> ParsedTitle:
             if value is not None:
                 part_number = Decimal(value)
                 part_label = word_match.group(0).strip()
-                working = working[: word_match.start()] + " " + working[word_match.end() :]
+                working = _strip_marker_and_subtitle(working, word_match)
 
     fraction_match = _FRACTION_RE.search(working)
     if fraction_match:
