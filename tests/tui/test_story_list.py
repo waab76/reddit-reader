@@ -15,6 +15,20 @@ async def test_app_starts_on_the_story_list(populated: ReaderService) -> None:
 
 
 @pytest.mark.asyncio
+async def test_escape_on_the_story_list_stays_put(populated: ReaderService) -> None:
+    """A regression: Textual keeps its own blank default screen underneath
+    whatever `on_mount` pushes, so a naive `len(screen_stack) > 1` check
+    thought Story List had somewhere to go back to and popped into it —
+    leaving the user on an empty screen with no way back except quitting."""
+    app = RedditReaderApp(populated)
+    async with app.run_test() as pilot:
+        assert isinstance(app.screen, StoryListScreen)
+        await pilot.press("escape")
+        await pilot.pause()
+        assert isinstance(app.screen, StoryListScreen)
+
+
+@pytest.mark.asyncio
 async def test_story_list_shows_untracked_stories(populated: ReaderService) -> None:
     app = RedditReaderApp(populated)
     async with app.run_test():

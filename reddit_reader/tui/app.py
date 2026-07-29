@@ -33,5 +33,15 @@ class RedditReaderApp(App[None]):
         self.push_screen(StoryListScreen(self.service))
 
     async def action_back(self) -> None:
+        """Pop to the previous screen, but never past Story List.
+
+        Textual always keeps its own blank default screen at the bottom of
+        the stack, underneath whatever `on_mount` pushes — so `screen_stack`
+        is never actually length 1 while sitting on Story List, and a naive
+        depth check would happily pop into that empty screen with no way
+        back except quitting.
+        """
+        if isinstance(self.screen, StoryListScreen):
+            return
         if len(self.screen_stack) > 1:
             self.pop_screen()
