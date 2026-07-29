@@ -65,6 +65,11 @@ class StorageAdminScreen(Screen[None]):
         table.add_columns("Story", "Author", "Parts", "Tracked")
         self.refresh_view()
 
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        if self._confirming is not None:
+            self._confirming = None
+            self._status("")
+
     def refresh_view(self) -> None:
         self.query_one("#usage", Static).update("\n".join(self.usage_lines()))
         table = self.query_one("#stories", DataTable)
@@ -89,11 +94,13 @@ class StorageAdminScreen(Screen[None]):
         self.query_one("#status", Static).update(message)
 
     def action_prune(self) -> None:
+        self._confirming = None
         removed = self.do_prune()
         self.refresh_view()
         self._status(f"Pruned {removed} orphaned posts.")
 
     def action_untrack(self) -> None:
+        self._confirming = None
         story_id = self._selected_story_id()
         if story_id is None:
             return
@@ -107,9 +114,12 @@ class StorageAdminScreen(Screen[None]):
             return
         if self._confirming != story_id:
             self._confirming = story_id
-            self._status(f"Press 'd' again to delete story {story_id}. Post metadata is kept.")
+            self._status(
+                f"[b red]Press 'd' again to delete story {story_id}.[/b red] "
+                "Post metadata is kept."
+            )
             return
         self.do_delete(story_id)
         self._confirming = None
         self.refresh_view()
-        self._status(f"Deleted story {story_id}.")
+        self._status(f"[b green]Deleted story {story_id}.[/b green]")
