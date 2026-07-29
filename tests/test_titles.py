@@ -124,3 +124,34 @@ def test_per_part_subtitle_does_not_leak_into_base_title() -> None:
     assert first.base_title == second.base_title == "a multipart story"
     assert first.part_number == Decimal("1")
     assert second.part_number == Decimal("2")
+
+
+def test_trailing_bare_number_is_an_implicit_part_marker() -> None:
+    first = parse_title("The Remote 1")
+    third = parse_title("The Remote 3")
+    assert first.base_title == third.base_title == "the remote"
+    assert first.part_number == Decimal("1")
+    assert third.part_number == Decimal("3")
+
+
+def test_trailing_bare_number_survives_trailing_tags() -> None:
+    parsed = parse_title("The Remote 3 [OC] [NSFW]")
+    assert parsed.base_title == "the remote"
+    assert parsed.part_number == Decimal("3")
+    assert set(parsed.tags) == {"OC", "NSFW"}
+
+
+def test_a_number_in_the_middle_of_a_title_is_not_a_part_marker() -> None:
+    parsed = parse_title("Top 10 Places to Visit")
+    assert parsed.part_number is None
+    assert parsed.base_title == "top 10 places to visit"
+
+
+def test_trailing_number_does_not_override_an_explicit_marker() -> None:
+    assert parse_title("The Long Road - Part 2").part_number == Decimal("2")
+
+
+def test_trailing_number_does_not_override_a_named_part() -> None:
+    parsed = parse_title("The Long Road - Interlude")
+    assert parsed.part_number is None
+    assert parsed.part_label == "Interlude"

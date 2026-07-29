@@ -45,6 +45,12 @@ _CONT_RE = re.compile(r"\(?\b(?:cont\.?|continued)\b\)?", re.IGNORECASE)
 _PUNCT_RE = re.compile(r"[^\w\s]")
 _WS_RE = re.compile(r"\s+")
 _SUBTITLE_STOP_RE = re.compile(r"[\[(]")
+# A bare number with no "part"/"chapter"/etc. keyword, but only when it's the
+# last meaningful thing in the title — trailing tags like "[OC]" are allowed
+# after it, so "The Remote 3 [OC]" still counts. A number anywhere earlier
+# ("Top 10 Places") is left alone, since it's far more likely to just be part
+# of the title than an implicit part marker.
+_TRAILING_NUMBER_RE = re.compile(r"(?<!\w)(\d+(?:\.\d+)?)\s*(?:[\[(][^\]\)]*[\])]\s*)*$")
 
 
 def _strip_marker_and_subtitle(working: str, match: re.Match[str]) -> str:
@@ -156,6 +162,13 @@ def parse_title(raw: str) -> ParsedTitle:
         if named_match:
             part_label = named_match.group(0).strip().rstrip(":").strip()
             working = _strip_marker_and_subtitle(working, named_match)
+
+    if part_number is None and part_label is None:
+        trailing_match = _TRAILING_NUMBER_RE.search(working)
+        if trailing_match:
+            part_number = Decimal(trailing_match.group(1))
+            part_label = trailing_match.group(1)
+            working = working[: trailing_match.start(1)] + " " + working[trailing_match.end(1) :]
 
     working = _CONT_RE.sub(" ", working)
 
