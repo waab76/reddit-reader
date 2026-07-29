@@ -1,4 +1,4 @@
-from reddit_reader.navlinks import extract_post_id, parse_nav_links
+from reddit_reader.navlinks import extract_all_post_ids, extract_post_id, parse_nav_links
 
 NAV_BLOCK = """
 Some story text here.
@@ -49,3 +49,29 @@ def test_link_labels_are_case_insensitive() -> None:
 def test_non_reddit_link_is_ignored() -> None:
     text = "[Next](https://royalroad.com/fiction/1)"
     assert parse_nav_links(text).next is None
+
+
+def test_extract_all_post_ids_finds_an_unlabeled_inline_mention() -> None:
+    text = "Catch up here: https://www.reddit.com/r/HFY/comments/aaa111/x/ if you missed it."
+    assert extract_all_post_ids(text) == ["aaa111"]
+
+
+def test_extract_all_post_ids_covers_markdown_and_short_links() -> None:
+    text = (
+        "[First](https://www.reddit.com/r/HFY/comments/aaa111/x/) "
+        "and also https://redd.it/bbb222 mentioned inline."
+    )
+    assert extract_all_post_ids(text) == ["aaa111", "bbb222"]
+
+
+def test_extract_all_post_ids_deduplicates_and_preserves_order() -> None:
+    text = (
+        "https://redd.it/bbb222 ... "
+        "https://www.reddit.com/r/HFY/comments/aaa111/x/ ... "
+        "https://redd.it/bbb222"
+    )
+    assert extract_all_post_ids(text) == ["bbb222", "aaa111"]
+
+
+def test_extract_all_post_ids_returns_empty_list_for_plain_text() -> None:
+    assert extract_all_post_ids("Just a story with no links.") == []

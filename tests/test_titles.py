@@ -81,6 +81,23 @@ def test_side_story_is_a_named_part() -> None:
     assert parsed.part_label.startswith("Side Story")
 
 
+def test_the_conclusion_groups_with_the_numbered_parts() -> None:
+    numbered = parse_title("The Long Road. Part 1 [Tag] [Other-Tag]")
+    conclusion = parse_title("The Long Road. The Conclusion. [Tag] [Other-Tag]")
+    assert numbered.base_title == conclusion.base_title == "the long road"
+    assert conclusion.part_number is None
+    assert conclusion.part_label == "The Conclusion"
+
+
+def test_named_part_does_not_swallow_a_hyphenated_tag() -> None:
+    """A regression: the named-part regex used to capture everything up to the
+    next hyphen, even inside a bracketed tag — corrupting both the base title
+    and dropping every tag after the first hyphen it hit."""
+    parsed = parse_title("The Long Road - Interlude [Sci-Fi] [Short]")
+    assert parsed.base_title == "the long road"
+    assert set(parsed.tags) == {"Sci-Fi", "Short"}
+
+
 def test_continuation_marker_is_stripped() -> None:
     assert parse_title("The Long Road (cont.)").base_title == "the long road"
 

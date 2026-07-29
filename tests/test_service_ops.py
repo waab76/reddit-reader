@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from reddit_reader.config import Settings
+from reddit_reader.models import DetectionMatch
 from reddit_reader.reddit_client import RedditClient
 from reddit_reader.service import ReaderService
 from reddit_reader.storage import PostRepository, SearchIndex, StoryRepository, connect
@@ -61,6 +62,75 @@ def test_find_missing_parts_recovers_a_part_from_author_history(tmp_path: Path) 
     )
     matches = service.find_missing_parts(story_id)
     assert any("a2" in m.post_ids for m in matches)
+
+
+def test_find_missing_parts_recovers_a_part_linked_from_a_neighbor(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "t.db")
+    reddit = FakeReddit(
+        submissions=[
+            make_submission("a1", "Road - Part 1", created_days=0),
+            make_submission(
+                "a3",
+                "Road - Part 3",
+                created_days=14,
+                selftext="Previously: https://www.reddit.com/r/HFY/comments/a2/x/",
+            ),
+        ],
+        # Part 2 was deleted and re-hosted by the author under a fresh post,
+        # so it never shows up in `author_submissions` — but it's still
+        # fetchable directly, and Part 3 links straight to it.
+        unlisted=[make_submission("a2", "Road - Part 2", created_days=7, author_name=None)],
+    )
+    service = ReaderService(
+        settings=Settings(subreddits=["HFY"], export_dir=tmp_path / "out"),
+        posts=PostRepository(conn),
+        stories=StoryRepository(conn),
+        search=SearchIndex(conn),
+        client=RedditClient(reddit),
+    )
+    story_id = service.commit_match(service.fetch().candidates[0])
+    assert service.gaps(story_id) == [Decimal("2")]
+
+    matches = service.find_missing_parts(story_id)
+    assert any("a2" in m.post_ids for m in matches)
+    # Recovered via the link — must not be auto-marked unavailable.
+    assert service.gaps(story_id) == [Decimal("2")]
+
+
+def test_attach_parts_orders_an_unnumbered_part_after_existing_numbered_parts(
+    tmp_path: Path,
+) -> None:
+    """A regression: an unnumbered part (interlude/epilogue/conclusion) attached
+    after the fact used to be ordered against only its own match's posts, with
+    no numbered sibling to anchor against — so it silently sorted before the
+    entire story instead of wherever it chronologically belongs."""
+    service = build(
+        tmp_path,
+        make_submission("a1", "Road - Part 1", created_days=0),
+        make_submission("a2", "Road - Part 2", created_days=7),
+    )
+    story_id = service.commit_match(service.fetch().candidates[0])
+
+    service.client._reddit.submissions.append(  # type: ignore[attr-defined]
+        make_submission("a3", "Road - Epilogue", created_days=14)
+    )
+    meta = service.client.get_meta_by_id("a3")
+    assert meta is not None
+    service.posts.upsert_meta(meta)
+
+    match = DetectionMatch(
+        base_title="road",
+        author="BlueFishcake",
+        volume=None,
+        post_ids=["a3"],
+        confidence=1.0,
+        existing_story_id=story_id,
+    )
+    assert service.attach_parts(story_id, match) == 1
+
+    parts = {p.post_id: p for p in service.stories.parts(story_id)}
+    assert parts["a1"].sort_key is not None
+    assert parts["a1"].sort_key < parts["a2"].sort_key < parts["a3"].sort_key
 
 
 def test_failed_backfill_auto_marks_the_gap_unavailable(gapped: ReaderService) -> None:

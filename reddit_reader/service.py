@@ -35,9 +35,9 @@ from reddit_reader.models import (
     StoryStatus,
     UnavailablePart,
 )
-from reddit_reader.navlinks import parse_nav_links
+from reddit_reader.navlinks import extract_all_post_ids, parse_nav_links
 from reddit_reader.ordering import OrderedPart, group_segments, resolve_order
-from reddit_reader.reddit_client import RedditClient
+from reddit_reader.reddit_client import DELETED_AUTHOR, RedditClient
 from reddit_reader.storage import PostRepository, SearchIndex, StoryRepository
 from reddit_reader.titles import parse_title
 
@@ -136,8 +136,13 @@ class ReaderService:
         story = self.stories.get(story_id)
         read_key = self._read_sort_key(story_id) if story else None
 
+        # Order against every part already in the story, not just the new
+        # ones: an unnumbered part (interlude/epilogue/conclusion) computed
+        # in isolation has no numbered sibling to anchor against and falls
+        # back to anchor 0, sorting it before the whole story instead of
+        # wherever it actually belongs.
         for part in self._build_parts(
-            story_id, match.post_ids, match.confidence, match.alternate_post_ids
+            story_id, [*known, *new_ids], match.confidence, match.alternate_post_ids
         ):
             if part.post_id not in new_ids:
                 continue
@@ -395,12 +400,99 @@ class ReaderService:
                 if parsed.part_number is not None:
                     found_numbers.add(parsed.part_number)
 
-        # Anything the author's full history could not produce is unfillable.
+        # The author's own history won't surface a part they later deleted or
+        # that fell outside Reddit's history limit — but a surviving neighbor
+        # often still links straight to it, so check before giving up.
+        still_missing = [number for number in missing if number not in found_numbers]
+        if still_missing:
+            claimed = known | {pid for c in candidates for pid in c.post_ids}
+            linked = self._find_via_adjacent_links(story, still_missing, claimed)
+            candidates.extend(linked)
+            for match in linked:
+                for meta in self.posts.get_many(match.post_ids):
+                    parsed = parse_title(meta.title)
+                    if parsed.part_number is not None:
+                        found_numbers.add(parsed.part_number)
+
+        # Anything nothing could produce is unfillable.
         for number in missing:
             if number not in found_numbers:
                 self.mark_unavailable(story_id, number, auto=True)
 
         return candidates
+
+    def _find_via_adjacent_links(
+        self, story: Story, missing: Sequence[Decimal], claimed: set[str]
+    ) -> list[DetectionMatch]:
+        """Check the parts next to each gap for a direct link to the missing one.
+
+        A neighboring part's own text often links straight to a part the
+        author's submission history no longer surfaces (deleted, or simply
+        outside Reddit's history limit). Each neighbor is checked at most
+        once; `claimed` tracks candidate ids already spoken for so the same
+        post is never proposed twice.
+        """
+        by_number = {
+            part.part_number: part.post_id
+            for part in self.stories.parts(story.id)
+            if part.part_number is not None
+        }
+        checked_neighbors: dict[str, str] = {}
+        found: list[DetectionMatch] = []
+
+        for number in missing:
+            match: DetectionMatch | None = None
+            for neighbor_id in (by_number.get(number - 1), by_number.get(number + 1)):
+                if neighbor_id is None:
+                    continue
+                if neighbor_id not in checked_neighbors:
+                    body = self.posts.get_body(neighbor_id)
+                    if body is None:
+                        self._cache_body(neighbor_id)
+                        body = self.posts.get_body(neighbor_id)
+                    checked_neighbors[neighbor_id] = body.selftext if body else ""
+
+                match = self._linked_candidate_for(
+                    story, number, checked_neighbors[neighbor_id], neighbor_id, claimed
+                )
+                if match is not None:
+                    break
+            if match is not None:
+                found.append(match)
+                claimed.update(match.post_ids)
+
+        return found
+
+    def _linked_candidate_for(
+        self, story: Story, number: Decimal, selftext: str, neighbor_id: str, claimed: set[str]
+    ) -> DetectionMatch | None:
+        for candidate_id in extract_all_post_ids(selftext):
+            if candidate_id in claimed:
+                continue
+            meta = self.posts.get_meta(candidate_id) or self.client.get_meta_by_id(candidate_id)
+            if meta is None:
+                continue
+            self.posts.upsert_meta(meta)
+            self.search.index_title(meta)
+
+            # A self-deleted repost still shows author "[deleted]" but keeps
+            # its text — the linking neighbor is what vouches for it here.
+            if meta.author != DELETED_AUTHOR and meta.author.lower() != story.author.lower():
+                continue
+            parsed = parse_title(meta.title)
+            if parsed.part_number != number:
+                continue
+
+            return DetectionMatch(
+                base_title=parsed.base_title,
+                author=meta.author,
+                volume=parsed.volume,
+                post_ids=[candidate_id],
+                confidence=1.0,
+                reasons=[f"linked from part {neighbor_id}"],
+                existing_story_id=story.id,
+            )
+        return None
 
     # ---- export -----------------------------------------------------------------
 

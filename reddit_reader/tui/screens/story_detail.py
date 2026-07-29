@@ -185,8 +185,12 @@ class StoryDetailScreen(Screen[None]):
         except RedditError as exc:
             self._status(f"Find missing failed: {exc}")
             return
-        self._status(f"Found {len(matches)} candidate groups from author history.")
+        self._status(f"Found {len(matches)} candidate groups.")
         self.refresh_view()
+        if matches:
+            from reddit_reader.tui.screens.curation import CurationScreen
+
+            self.app.push_screen(CurationScreen(self.service, matches))
 
     def action_export(self) -> None:
         self._status(f"Wrote {self.do_export()}")

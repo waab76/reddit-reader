@@ -29,6 +29,28 @@ def extract_post_id(url: str) -> str | None:
     return match.group(1) if match else None
 
 
+def extract_all_post_ids(text: str) -> list[str]:
+    """Every distinct Reddit post id linked anywhere in `text`, first-seen order.
+
+    Unlike `parse_nav_links`, this isn't limited to markdown `[label](url)`
+    syntax or First/Prev/Next labels — it catches any comments/short link in
+    the body, e.g. an inline mention of a part that never made it into the
+    author's own submission history.
+    """
+    matches = sorted(
+        (*_COMMENTS_URL_RE.finditer(text), *_SHORT_URL_RE.finditer(text)),
+        key=lambda m: m.start(),
+    )
+    ids: list[str] = []
+    seen: set[str] = set()
+    for match in matches:
+        post_id = match.group(1)
+        if post_id not in seen:
+            seen.add(post_id)
+            ids.append(post_id)
+    return ids
+
+
 def parse_nav_links(selftext: str) -> NavLinks:
     """Find First/Prev/Next navigation links and resolve them to post ids."""
     links = NavLinks()

@@ -1,10 +1,14 @@
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
 from reddit_reader.config import Settings
 from reddit_reader.reddit_client import RedditClient
 from reddit_reader.service import ReaderService
 from reddit_reader.storage import PostRepository, SearchIndex, StoryRepository, connect
+from reddit_reader.tui.app import RedditReaderApp
+from reddit_reader.tui.screens.curation import CurationScreen
 from reddit_reader.tui.screens.story_detail import StoryDetailScreen
 from tests.fakes import FakeReddit, make_submission
 
@@ -54,6 +58,31 @@ def test_find_missing_is_enabled_when_a_gap_exists(
     screen = StoryDetailScreen(populated, story_id)
     assert screen.can_find_missing() is True
     assert "1" in screen.gap_summary()
+
+
+@pytest.mark.asyncio
+async def test_pressing_f_pushes_curation_with_recovered_candidates(tmp_path: Path) -> None:
+    service = _build_service(
+        tmp_path,
+        "f.db",
+        make_submission("a1", "Road - Part 1", created_days=0),
+        make_submission("a3", "Road - Part 3", created_days=14),
+    )
+    story_id = service.commit_match(service.fetch().candidates[0])
+    # Part 2 exists on Reddit but was outside the initial fetch window.
+    service.client._reddit.submissions.append(  # type: ignore[attr-defined]
+        make_submission("a2", "Road - Part 2", created_days=7)
+    )
+
+    app = RedditReaderApp(service)
+    async with app.run_test() as pilot:
+        app.push_screen(StoryDetailScreen(service, story_id))
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+
+        assert isinstance(app.screen, CurationScreen)
+        assert any("a2" in match.post_ids for match in app.screen.candidates)
 
 
 def test_tracking_marks_the_story_tracked(

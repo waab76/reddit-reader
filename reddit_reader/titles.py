@@ -14,7 +14,14 @@ from text_to_num import text2num
 
 ROMAN_VALUES = {"i": 1, "v": 5, "x": 10, "l": 50, "c": 100, "d": 500, "m": 1000}
 
-NAMED_PART_WORDS = ("interlude", "prologue", "epilogue", "side story", "intermission")
+NAMED_PART_WORDS = (
+    "interlude",
+    "prologue",
+    "epilogue",
+    "side story",
+    "intermission",
+    "conclusion",
+)
 
 _TAG_RE = re.compile(r"[\[(]([^\]\)]+)[\])]")
 _FRACTION_RE = re.compile(r"[\[(](\d+)\s*/\s*(\d+)[\])]")
@@ -31,7 +38,7 @@ _WORD_PART_RE = re.compile(
     re.IGNORECASE,
 )
 _NAMED_PART_RE = re.compile(
-    r"\b(" + "|".join(NAMED_PART_WORDS) + r")\b\s*:?\s*([^\-–—|]*)",  # noqa: RUF001
+    r"\b(?:the\s+)?(" + "|".join(NAMED_PART_WORDS) + r")\b\s*:?",
     re.IGNORECASE,
 )
 _CONT_RE = re.compile(r"\(?\b(?:cont\.?|continued)\b\)?", re.IGNORECASE)
@@ -148,7 +155,7 @@ def parse_title(raw: str) -> ParsedTitle:
         named_match = _NAMED_PART_RE.search(working)
         if named_match:
             part_label = named_match.group(0).strip().rstrip(":").strip()
-            working = working[: named_match.start()] + " " + working[named_match.end() :]
+            working = _strip_marker_and_subtitle(working, named_match)
 
     working = _CONT_RE.sub(" ", working)
 

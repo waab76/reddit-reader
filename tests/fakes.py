@@ -116,6 +116,12 @@ class FakeReddit:
 
     submissions: list[FakeSubmission] = field(default_factory=list)
     missing_ids: set[str] = field(default_factory=set)
+    # Fetchable directly by id (`submission(id=...)`), but absent from every
+    # listing (subreddit new/hot/top, search, author history) — models a post
+    # that's gone from listings (e.g. deleted, or beyond Reddit's history
+    # limit) but still resolves by permalink, e.g. when another part links to
+    # it directly.
+    unlisted: list[FakeSubmission] = field(default_factory=list)
 
     def subreddit(self, name: str) -> FakeListing:
         if name == "all":
@@ -139,7 +145,7 @@ class FakeReddit:
         same as the real thing.
         """
         if id not in self.missing_ids:
-            for candidate in self.submissions:
+            for candidate in (*self.submissions, *self.unlisted):
                 if candidate.id == id:
                     return candidate
         return FakeMissingSubmission(id)
