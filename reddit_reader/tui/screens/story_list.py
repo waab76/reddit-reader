@@ -14,6 +14,7 @@ from textual.widgets import DataTable, Footer, Header, Static
 from reddit_reader.models import Story
 from reddit_reader.ordering import format_part_number
 from reddit_reader.service import ReaderService
+from reddit_reader.tui.screens import TITLE_COLUMN_WIDTH
 
 SORT_KEYS = ("series", "score", "parts", "recent")
 
@@ -117,7 +118,10 @@ class StoryListScreen(Screen[None]):
     def on_mount(self) -> None:
         table = self.query_one("#stories", DataTable)
         table.cursor_type = "row"
-        table.add_columns("Title", "Author", "Parts", "Status", "Tracked", "Unread", "Gaps", "New")
+        table.add_column("Author")
+        # Capped so a runaway-long title can't push the rest of the row off screen.
+        table.add_column("Title", width=TITLE_COLUMN_WIDTH)
+        table.add_columns("Parts", "Status", "Tracked", "Unread", "Gaps", "New")
         self.refresh_rows()
 
     def refresh_rows(self) -> None:
@@ -130,8 +134,8 @@ class StoryListScreen(Screen[None]):
             filled = self.service.newly_filled(story.id)
             volume = f" (vol {story.volume})" if story.volume is not None else ""
             table.add_row(
-                f"{story.title}{volume}",
                 story.author,
+                f"{story.title}{volume}",
                 str(parts),
                 self.service.story_status(story).value,
                 "yes" if story.tracked else "no",

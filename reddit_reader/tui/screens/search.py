@@ -13,6 +13,7 @@ from reddit_reader.models import PostMeta
 from reddit_reader.reddit_client import RedditError
 from reddit_reader.service import ReaderService
 from reddit_reader.tui.navigation import open_post
+from reddit_reader.tui.screens import TITLE_COLUMN_WIDTH
 
 
 class SearchScreen(Screen[None]):
@@ -56,7 +57,10 @@ class SearchScreen(Screen[None]):
     def on_mount(self) -> None:
         table = self.query_one("#results", DataTable)
         table.cursor_type = "row"
-        table.add_columns("Title", "Subreddit", "Author")
+        table.add_column("Author")
+        table.add_column("Subreddit")
+        # Capped so a runaway-long title can't push Author/Subreddit off screen.
+        table.add_column("Title", width=TITLE_COLUMN_WIDTH)
 
     def _query(self) -> str:
         return self.query_one("#query", Input).value
@@ -70,7 +74,7 @@ class SearchScreen(Screen[None]):
         table = self.query_one("#results", DataTable)
         table.clear()
         for meta in self.results:
-            table.add_row(meta.title, meta.subreddit, meta.author, key=meta.id)
+            table.add_row(meta.author, meta.subreddit, meta.title, key=meta.id)
         self.query_one("#status", Static).update(f"{len(self.results)} results")
 
     def action_search_local(self) -> None:

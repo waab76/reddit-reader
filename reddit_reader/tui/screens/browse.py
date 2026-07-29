@@ -12,6 +12,7 @@ from textual.widgets import DataTable, Footer, Header, Static
 from reddit_reader.reddit_client import RedditError
 from reddit_reader.service import FetchResult, ReaderService
 from reddit_reader.tui.navigation import open_post
+from reddit_reader.tui.screens import TITLE_COLUMN_WIDTH
 
 LISTINGS = ("new", "hot", "top")
 
@@ -46,7 +47,7 @@ class BrowseScreen(Screen[None]):
         return self._last_result
 
     def _visible_entries(self) -> list[tuple[str, tuple[str, str, str, str]]]:
-        """(post_id, (title, subreddit, author, grouped?)) for every cached post."""
+        """(post_id, (author, subreddit, title, grouped?)) for every cached post."""
         grouped = {
             post_id
             for story in self.service.stories.all_stories()
@@ -62,13 +63,13 @@ class BrowseScreen(Screen[None]):
             entries.append(
                 (
                     meta.id,
-                    (meta.title, meta.subreddit, meta.author, "yes" if meta.id in grouped else "no"),
+                    (meta.author, meta.subreddit, meta.title, "yes" if meta.id in grouped else "no"),
                 )
             )
         return entries
 
     def rows(self) -> list[tuple[str, str, str, str]]:
-        """(title, subreddit, author, grouped?) for every cached post."""
+        """(author, subreddit, title, grouped?) for every cached post."""
         return [row for _, row in self._visible_entries()]
 
     def _selected_post_id(self) -> str | None:
@@ -87,7 +88,11 @@ class BrowseScreen(Screen[None]):
     def on_mount(self) -> None:
         table = self.query_one("#posts", DataTable)
         table.cursor_type = "row"
-        table.add_columns("Title", "Subreddit", "Author", "Grouped")
+        table.add_column("Author")
+        table.add_column("Subreddit")
+        # Capped so a runaway-long title can't push Author/Subreddit off screen.
+        table.add_column("Title", width=TITLE_COLUMN_WIDTH)
+        table.add_column("Grouped")
         self.refresh_rows()
 
     def refresh_rows(self) -> None:

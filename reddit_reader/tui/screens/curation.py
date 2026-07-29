@@ -11,6 +11,7 @@ from textual.widgets import DataTable, Footer, Header, Static
 
 from reddit_reader.models import DetectionMatch
 from reddit_reader.service import ReaderService
+from reddit_reader.tui.screens import TITLE_COLUMN_WIDTH
 
 
 class CurationScreen(Screen[None]):
@@ -83,7 +84,10 @@ class CurationScreen(Screen[None]):
     def on_mount(self) -> None:
         table = self.query_one("#candidates", DataTable)
         table.cursor_type = "row"
-        table.add_columns("Title", "Author", "Volume", "Parts", "Confidence", "Existing")
+        table.add_column("Author")
+        # Capped so a runaway-long title can't push the rest of the row off screen.
+        table.add_column("Title", width=TITLE_COLUMN_WIDTH)
+        table.add_columns("Volume", "Parts", "Confidence", "Existing")
         self.refresh_rows()
 
     def refresh_rows(self) -> None:
@@ -91,8 +95,8 @@ class CurationScreen(Screen[None]):
         table.clear()
         for match in self.candidates:
             table.add_row(
-                match.base_title,
                 match.author,
+                match.base_title,
                 str(match.volume) if match.volume is not None else "-",
                 str(len(match.post_ids)),
                 f"{match.confidence:.2f}",

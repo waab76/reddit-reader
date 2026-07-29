@@ -10,6 +10,7 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Static
 
 from reddit_reader.service import ReaderService
+from reddit_reader.tui.screens import TITLE_COLUMN_WIDTH
 
 
 def _mb(value: int) -> str:
@@ -62,7 +63,10 @@ class StorageAdminScreen(Screen[None]):
     def on_mount(self) -> None:
         table = self.query_one("#stories", DataTable)
         table.cursor_type = "row"
-        table.add_columns("Story", "Author", "Parts", "Tracked")
+        table.add_column("Author")
+        # Capped so a runaway-long title can't push Author/Parts/Tracked off screen.
+        table.add_column("Story", width=TITLE_COLUMN_WIDTH)
+        table.add_columns("Parts", "Tracked")
         self.refresh_view()
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
@@ -76,8 +80,8 @@ class StorageAdminScreen(Screen[None]):
         table.clear()
         for story in self.service.stories.all_stories():
             table.add_row(
-                story.title,
                 story.author,
+                story.title,
                 str(len(self.service.stories.parts(story.id))),
                 "yes" if story.tracked else "no",
                 key=str(story.id),
