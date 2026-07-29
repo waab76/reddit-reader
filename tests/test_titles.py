@@ -155,3 +155,20 @@ def test_trailing_number_does_not_override_a_named_part() -> None:
     parsed = parse_title("The Long Road - Interlude")
     assert parsed.part_number is None
     assert parsed.part_label == "Interlude"
+
+
+def test_display_title_keeps_the_apostrophe() -> None:
+    """A regression: `base_title` strips all punctuation for matching purposes
+    (apostrophe included, "can't" -> "can t"), and that value used to be
+    reused as the displayed story title too — so "I Can't Read" rendered as
+    "I Can T Read" once title-cased. `display_title` is for showing to a
+    user and must never go through that normalization."""
+    parsed = parse_title("I Can't Read")
+    assert parsed.display_title == "I Can't Read"
+    assert parsed.base_title == "i can t read"
+
+
+def test_display_title_strips_markers_and_tags_but_keeps_casing() -> None:
+    parsed = parse_title("the Long road - Part 3 [OC]")
+    assert parsed.display_title == "the Long road"
+    assert set(parsed.tags) == {"OC"}

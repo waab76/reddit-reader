@@ -72,6 +72,7 @@ class ParsedTitle(BaseModel):
     """Structured view of a post title."""
 
     base_title: str
+    display_title: str
     part_number: Decimal | None = None
     part_label: str | None = None
     volume: int | None = None
@@ -104,8 +105,23 @@ def _words_to_int(text: str) -> int | None:
 
 
 def _normalize(text: str) -> str:
-    """Lowercase, strip punctuation, collapse whitespace."""
+    """Lowercase, strip punctuation, collapse whitespace.
+
+    For `base_title`: a matching key, not something ever shown to a user, so
+    stripping "can't" down to "can t" is harmless there — it just needs to be
+    stable and comparable across differently-punctuated titles.
+    """
     return _WS_RE.sub(" ", _PUNCT_RE.sub(" ", text)).strip().lower()
+
+
+def _clean_display_title(text: str) -> str:
+    """Collapse whitespace and trim leftover marker punctuation, but keep the
+    original casing and punctuation (like apostrophes) intact — unlike
+    `base_title`, this is shown to the user, so mangling "can't" into "can t"
+    (and then into "Can T" once title-cased) is exactly what this avoids.
+    """
+    collapsed = _WS_RE.sub(" ", text).strip()
+    return collapsed.strip(" -–—:,.|")  # noqa: RUF001
 
 
 def parse_title(raw: str) -> ParsedTitle:
@@ -179,6 +195,7 @@ def parse_title(raw: str) -> ParsedTitle:
 
     return ParsedTitle(
         base_title=_normalize(working),
+        display_title=_clean_display_title(working),
         part_number=part_number,
         part_label=part_label,
         volume=volume,

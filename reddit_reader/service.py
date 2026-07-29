@@ -194,7 +194,7 @@ class ReaderService:
             Story(
                 id=0,
                 series_key=series_key(match.author, match.base_title),
-                title=match.base_title.title(),
+                title=match.display_title,
                 author=match.author,
                 volume=match.volume,
                 last_updated_at=datetime.now(UTC),
@@ -485,6 +485,7 @@ class ReaderService:
 
             return DetectionMatch(
                 base_title=parsed.base_title,
+                display_title=parsed.display_title,
                 author=meta.author,
                 volume=parsed.volume,
                 post_ids=[candidate_id],

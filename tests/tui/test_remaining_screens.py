@@ -90,6 +90,7 @@ def test_curation_accept_attaches_to_an_existing_story(service: ReaderService) -
     )
     match = DetectionMatch(
         base_title=target.base_title,
+        display_title=target.display_title,
         author=target.author,
         volume=target.volume,
         post_ids=[new_post_id],

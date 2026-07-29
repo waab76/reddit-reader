@@ -156,6 +156,49 @@ async def test_resuming_a_story_restores_the_saved_scroll_offset(
         assert scroll.scroll_y == pytest.approx(0.6 * maximum, abs=1.0)
 
 
+@pytest.mark.asyncio
+async def test_next_part_opens_scrolled_to_the_top(
+    populated: ReaderService, tracked_story: int
+) -> None:
+    """A regression: `refresh_view` only swaps the Markdown widget's content —
+    the surrounding `VerticalScroll` kept whatever `scroll_y` it had on the
+    previous part, so advancing past a part you'd scrolled to the bottom of
+    opened the next one still scrolled to that same offset instead of the
+    top."""
+    from textual.containers import VerticalScroll
+
+    from reddit_reader.models import PostBody
+
+    story_id = tracked_story
+    parts = populated.ordered_parts(story_id)
+    for part in parts[:2]:
+        populated.posts.set_body(
+            PostBody(
+                post_id=part.post.id,
+                selftext="\n\n".join(f"Paragraph {n}." for n in range(200)),
+            )
+        )
+
+    app = RedditReaderApp(populated)
+    async with app.run_test() as pilot:
+        screen = ReaderScreen(populated, story_id)
+        app.push_screen(screen)
+        await pilot.pause()
+        await pilot.pause()
+
+        scroll = screen.query_one("#body-scroll", VerticalScroll)
+        assert scroll.max_scroll_y > 0
+        await pilot.press("G")
+        await pilot.pause()
+        assert scroll.scroll_y > 0
+
+        await pilot.press("n")
+        await pilot.pause()
+
+        assert screen.part_index == 1
+        assert scroll.scroll_y == 0
+
+
 # --- vim-style paging: space/b to page, g/G to jump to top/bottom -------------
 
 

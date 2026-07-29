@@ -104,6 +104,10 @@ class DetectionMatch(BaseModel):
     """A transient candidate grouping. Never persisted."""
 
     base_title: str
+    # Original casing/punctuation, for anything shown to a user — `base_title`
+    # is a normalized matching key (apostrophes stripped, lowercased) and was
+    # never meant to be displayed.
+    display_title: str
     author: str
     volume: int | None
     post_ids: list[str]

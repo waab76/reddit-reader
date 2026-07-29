@@ -74,6 +74,26 @@ def test_committed_story_records_series_key_and_author(service: ReaderService) -
     assert story.series_key.startswith("bluefishcake:")
 
 
+def test_committed_story_title_keeps_the_apostrophe(tmp_path: Path) -> None:
+    """A regression: the story's displayed title used to come from
+    `base_title.title()` — `base_title` has all punctuation stripped for
+    matching, and `.title()` mishandles apostrophes on top of that — turning
+    "I Can't Read" into "I Can T Read"."""
+    conn = connect(tmp_path / "t.db")
+    reddit = FakeReddit(submissions=[make_submission("a1", "I Can't Read")])
+    service = ReaderService(
+        settings=Settings(subreddits=["HFY"], export_dir=tmp_path / "out"),
+        posts=PostRepository(conn),
+        stories=StoryRepository(conn),
+        search=SearchIndex(conn),
+        client=RedditClient(reddit),
+    )
+    story_id = service.commit_match(service.fetch().candidates[0])
+    story = service.stories.get(story_id)
+    assert story is not None
+    assert story.title == "I Can't Read"
+
+
 def test_second_fetch_auto_attaches_a_new_part(service: ReaderService) -> None:
     service.commit_match(service.fetch().candidates[0])
     service.client._reddit.submissions.append(  # type: ignore[attr-defined]

@@ -169,10 +169,28 @@ class ReaderScreen(Screen[None]):
     def action_next(self) -> None:
         if self.next_part():
             self.refresh_view()
+            self._scroll_to_top()
 
     def action_previous(self) -> None:
         if self.previous_part():
             self.refresh_view()
+            self._scroll_to_top()
+
+    def _scroll_to_top(self) -> None:
+        """Land on the top of a newly-switched-to part.
+
+        `refresh_view` only swaps the Markdown widget's content — the
+        `VerticalScroll` container around it keeps whatever `scroll_y` it had
+        on the previous part, so a part changed while scrolled to the bottom
+        would open still scrolled to that same offset instead of the top.
+        Unlike the saved-offset restore on initial mount, 0 is always valid
+        immediately, with no need to wait for layout to settle.
+        """
+        try:
+            scroll = self.query_one("#body-scroll", VerticalScroll)
+        except Exception:  # noqa: BLE001 - screen may be torn down before mount completes
+            return
+        scroll.scroll_home(animate=False)
 
     def action_toggle_spoilers(self) -> None:
         self.toggle_spoilers()

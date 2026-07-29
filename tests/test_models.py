@@ -83,6 +83,7 @@ def test_cleaning_rule_starts_undecided() -> None:
 def test_detection_match_carries_confidence_and_reasons() -> None:
     match = DetectionMatch(
         base_title="the long road",
+        display_title="The Long Road",
         author="BlueFishcake",
         volume=None,
         post_ids=["abc123", "def456"],

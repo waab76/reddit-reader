@@ -119,6 +119,10 @@ def group_posts(
         matches.append(
             DetectionMatch(
                 base_title=base_title,
+                # The earliest part's own casing/punctuation represents the
+                # series best — later parts sometimes drift ("pt. 4", ALL
+                # CAPS, etc.).
+                display_title=group_parsed[0].display_title,
                 author=group_posts_list[0].author,
                 volume=volume,
                 post_ids=post_ids,
@@ -133,6 +137,7 @@ def group_posts(
         matches.append(
             DetectionMatch(
                 base_title=parsed.base_title,
+                display_title=parsed.display_title,
                 author=post.author,
                 volume=parsed.volume,
                 post_ids=[post.id],

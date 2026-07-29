@@ -65,7 +65,12 @@ def test_find_gaps_caps_the_search_for_a_spuriously_huge_part_number() -> None:
 
 def test_high_confidence_match_on_existing_story_auto_attaches() -> None:
     match = DetectionMatch(
-        base_title="road", author="A", volume=None, post_ids=["x"], confidence=0.95
+        base_title="road",
+        display_title="Road",
+        author="A",
+        volume=None,
+        post_ids=["x"],
+        confidence=0.95,
     )
     story = Story(id=7, series_key="a:road", title="Road", author="A")
     decision = decide_attachment(match, story, DEFAULT_ATTACH_THRESHOLD)
@@ -75,7 +80,12 @@ def test_high_confidence_match_on_existing_story_auto_attaches() -> None:
 
 def test_low_confidence_match_on_existing_story_goes_to_curation() -> None:
     match = DetectionMatch(
-        base_title="road", author="A", volume=None, post_ids=["x"], confidence=0.4
+        base_title="road",
+        display_title="Road",
+        author="A",
+        volume=None,
+        post_ids=["x"],
+        confidence=0.4,
     )
     story = Story(id=7, series_key="a:road", title="Road", author="A")
     decision = decide_attachment(match, story, DEFAULT_ATTACH_THRESHOLD)
@@ -85,7 +95,12 @@ def test_low_confidence_match_on_existing_story_goes_to_curation() -> None:
 
 def test_match_with_no_existing_story_is_a_new_series() -> None:
     match = DetectionMatch(
-        base_title="road", author="A", volume=None, post_ids=["x"], confidence=0.99
+        base_title="road",
+        display_title="Road",
+        author="A",
+        volume=None,
+        post_ids=["x"],
+        confidence=0.99,
     )
     decision = decide_attachment(match, None, DEFAULT_ATTACH_THRESHOLD)
     assert decision.action == "new_series"
@@ -94,7 +109,12 @@ def test_match_with_no_existing_story_is_a_new_series() -> None:
 
 def test_threshold_boundary_is_inclusive() -> None:
     match = DetectionMatch(
-        base_title="road", author="A", volume=None, post_ids=["x"], confidence=0.85
+        base_title="road",
+        display_title="Road",
+        author="A",
+        volume=None,
+        post_ids=["x"],
+        confidence=0.85,
     )
     story = Story(id=1, series_key="a:road", title="Road", author="A")
     assert decide_attachment(match, story, 0.85).action == "auto_attach"

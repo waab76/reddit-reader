@@ -65,6 +65,7 @@ class CurationScreen(Screen[None]):
         self.candidates.append(
             DetectionMatch(
                 base_title=source.base_title,
+                display_title=source.display_title,
                 author=source.author,
                 volume=source.volume,
                 post_ids=moved,
@@ -96,7 +97,7 @@ class CurationScreen(Screen[None]):
         for match in self.candidates:
             table.add_row(
                 match.author,
-                match.base_title,
+                match.display_title,
                 str(match.volume) if match.volume is not None else "-",
                 str(len(match.post_ids)),
                 f"{match.confidence:.2f}",

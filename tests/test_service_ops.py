@@ -120,6 +120,7 @@ def test_attach_parts_orders_an_unnumbered_part_after_existing_numbered_parts(
 
     match = DetectionMatch(
         base_title="road",
+        display_title="Road",
         author="BlueFishcake",
         volume=None,
         post_ids=["a3"],
