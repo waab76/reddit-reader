@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from decimal import Decimal
 from typing import ClassVar
@@ -13,8 +14,11 @@ from textual.widgets import DataTable, Footer, Header, Static
 
 from reddit_reader.models import Story
 from reddit_reader.ordering import format_part_number
+from reddit_reader.reddit_client import RedditError
 from reddit_reader.service import ReaderService
 from reddit_reader.tui.screens import TITLE_COLUMN_WIDTH
+
+logger = logging.getLogger(__name__)
 
 SORT_KEYS = ("series", "score", "parts", "recent")
 
@@ -42,6 +46,7 @@ class StoryListScreen(Screen[None]):
         ("enter", "open", "Open"),
         ("s", "cycle_sort", "Sort"),
         ("t", "toggle_tracked_filter", "Tracked filter"),
+        ("u", "check_updates", "Check updates"),
         ("b", "browse", "Browse"),
         ("/", "search", "Search"),
         ("g", "storage", "Storage"),
@@ -181,6 +186,19 @@ class StoryListScreen(Screen[None]):
         binding alone is dead on a focused table. This message handler is what
         actually makes Enter open the selected story."""
         self.action_open()
+
+    def action_check_updates(self) -> None:
+        try:
+            results = self.service.check_all_for_updates()
+        except RedditError as exc:
+            logger.warning("check_updates failed: %s", exc)
+            self._set_status(f"Check updates failed: {exc}")
+            return
+        attached = sum(r.attached for r in results)
+        self.refresh_rows()
+        self._set_status(
+            f"Checked {len(results)} tracked stories — {attached} new parts attached."
+        )
 
     def action_browse(self) -> None:
         from reddit_reader.tui.screens.browse import BrowseScreen

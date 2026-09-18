@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from typing import ClassVar
 
 from textual.app import ComposeResult
@@ -10,6 +11,8 @@ from textual.binding import BindingType
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Static
 
+from reddit_reader.dedupe import collapse_duplicates
+from reddit_reader.models import PostMeta
 from reddit_reader.reddit_client import RedditError
 from reddit_reader.service import FetchResult, ReaderService
 from reddit_reader.tui.navigation import open_post
@@ -27,6 +30,7 @@ class BrowseScreen(Screen[None]):
         ("f", "fetch", "Fetch"),
         ("l", "cycle_listing", "Listing type"),
         ("o", "open_selected", "Open"),
+        ("p", "preview", "Preview"),
         ("escape", "app.back", "Back"),
     ]
 
@@ -49,6 +53,24 @@ class BrowseScreen(Screen[None]):
         self._last_result = self.service.fetch()
         return self._last_result
 
+    def _duplicate_ids(self, metas: Iterable[PostMeta]) -> set[str]:
+        """Non-canonical ids `collapse_duplicates` folds into another post, per author.
+
+        These are exactly the ids `open_post` (navigation.py) can never act
+        on directly — only a match's canonical post ever appears in a
+        `DetectionMatch.post_ids` — so Enter/`o` on one is a silent no-op.
+        Rather than leave that trap in the listing, Browse hides them.
+        """
+        duplicate_ids: set[str] = set()
+        for author in {meta.author for meta in metas}:
+            groups = collapse_duplicates(
+                self.service.posts.by_author(author),
+                self.service.settings.subreddits,
+                window_hours=self.service.settings.dedupe_window_hours,
+            )
+            duplicate_ids.update(alt.id for group in groups for alt in group.alternates)
+        return duplicate_ids
+
     def _visible_entries(self) -> list[tuple[str, tuple[str, str, str, str]]]:
         """(post_id, (author, subreddit, title, grouped?)) for every cached post."""
         grouped = {
@@ -56,9 +78,19 @@ class BrowseScreen(Screen[None]):
             for story in self.service.stories.all_stories()
             for post_id in self.service.stories.part_post_ids(story.id)
         }
+        orphan_ids = self.service.posts.orphaned_ids()
+        orphan_metas = {
+            post_id: meta
+            for post_id in orphan_ids
+            if (meta := self.service.posts.get_meta(post_id)) is not None
+        }
+        duplicate_ids = self._duplicate_ids(orphan_metas.values())
+
         entries: list[tuple[str, tuple[str, str, str, str]]] = []
-        for post_id in self.service.posts.orphaned_ids() + sorted(grouped):
-            meta = self.service.posts.get_meta(post_id)
+        for post_id in orphan_ids + sorted(grouped):
+            if post_id in duplicate_ids and post_id not in grouped:
+                continue
+            meta = orphan_metas.get(post_id) or self.service.posts.get_meta(post_id)
             if meta is None:
                 continue
             if self._subreddit_filter and meta.subreddit.lower() != self._subreddit_filter.lower():
@@ -146,3 +178,11 @@ class BrowseScreen(Screen[None]):
         post_id = self._selected_post_id()
         if post_id is not None:
             open_post(self, self.service, post_id)
+
+    def action_preview(self) -> None:
+        post_id = self._selected_post_id()
+        if post_id is None:
+            return
+        from reddit_reader.tui.screens.preview import PreviewScreen
+
+        self.app.push_screen(PreviewScreen(self.service, post_id))

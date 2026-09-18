@@ -2,6 +2,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
+from textual.widgets import Static
 
 from reddit_reader.config import Settings
 from reddit_reader.reddit_client import RedditClient
@@ -179,3 +180,67 @@ def test_gap_summary_truncates_long_gap_lists(tmp_path: Path) -> None:
     summary = screen.gap_summary()
     assert "more" in summary
     assert summary.count(",") < 48
+
+
+# --- Checking one tracked story for new installments --------------------------
+
+
+def test_check_updates_attaches_a_new_part(tmp_path: Path) -> None:
+    service = _build_service(
+        tmp_path, "checkupdates.db", make_submission("a1", "Road - Part 1", created_days=0)
+    )
+    story_id = service.commit_match(service.fetch().candidates[0])
+    service.track(story_id)
+    service.client._reddit.submissions.append(  # type: ignore[attr-defined]
+        make_submission("a2", "Road - Part 2", created_days=7)
+    )
+
+    screen = StoryDetailScreen(service, story_id)
+    result = screen.do_check_updates()
+
+    assert result.attached == 1
+    assert "a2" in service.stories.part_post_ids(story_id)
+
+
+@pytest.mark.asyncio
+async def test_pressing_n_checks_for_updates_and_reports_the_status(tmp_path: Path) -> None:
+    service = _build_service(
+        tmp_path, "pressn.db", make_submission("a1", "Road - Part 1", created_days=0)
+    )
+    story_id = service.commit_match(service.fetch().candidates[0])
+    service.track(story_id)
+    service.client._reddit.submissions.append(  # type: ignore[attr-defined]
+        make_submission("a2", "Road - Part 2", created_days=7)
+    )
+
+    app = RedditReaderApp(service)
+    async with app.run_test() as pilot:
+        app.push_screen(StoryDetailScreen(service, story_id))
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+
+        screen = app.screen
+        assert isinstance(screen, StoryDetailScreen)
+        status_text = str(screen.query_one("#status", Static).content)
+        assert "attached 1" in status_text.lower()
+
+
+@pytest.mark.asyncio
+async def test_check_updates_refuses_on_an_untracked_story(tmp_path: Path) -> None:
+    service = _build_service(
+        tmp_path, "untracked.db", make_submission("a1", "Road - Part 1", created_days=0)
+    )
+    story_id = service.commit_match(service.fetch().candidates[0])
+
+    app = RedditReaderApp(service)
+    async with app.run_test() as pilot:
+        app.push_screen(StoryDetailScreen(service, story_id))
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+
+        screen = app.screen
+        assert isinstance(screen, StoryDetailScreen)
+        status_text = str(screen.query_one("#status", Static).content)
+        assert "track this story first" in status_text.lower()

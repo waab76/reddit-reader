@@ -30,6 +30,7 @@ from reddit_reader.export import (
 from reddit_reader.models import (
     CleaningRule,
     DetectionMatch,
+    PostBody,
     PostMeta,
     Story,
     StoryPart,
@@ -38,7 +39,7 @@ from reddit_reader.models import (
 )
 from reddit_reader.navlinks import extract_all_post_ids, parse_nav_links
 from reddit_reader.ordering import OrderedPart, group_segments, resolve_order
-from reddit_reader.reddit_client import DELETED_AUTHOR, RedditClient
+from reddit_reader.reddit_client import DELETED_AUTHOR, RedditClient, RedditError
 from reddit_reader.storage import PostRepository, SearchIndex, StoryRepository
 from reddit_reader.titles import parse_title
 
@@ -52,6 +53,14 @@ class FetchResult(BaseModel):
 
     fetched: int
     auto_attached: int
+    candidates: list[DetectionMatch]
+
+
+class UpdateResult(BaseModel):
+    """What checking one tracked story for new installments found."""
+
+    story_id: int
+    attached: int
     candidates: list[DetectionMatch]
 
 
@@ -304,6 +313,90 @@ class ReaderService:
             self.stories.update(story)
         logger.info("untrack: story=%d dropped %d bodies", story_id, dropped)
         return dropped
+
+    def check_for_updates(self, story_id: int) -> UpdateResult:
+        """Pull the author's recent submissions and auto-attach any new matching parts.
+
+        Only meaningful for a tracked story: an auto-attached part gets its
+        body cached immediately, exactly like any other auto-attach (see
+        `attach_parts`). A story already exported to disk is re-exported so
+        the file picks up the new part without a separate manual step.
+        """
+        story = self.stories.get(story_id)
+        if story is None or not story.tracked:
+            return UpdateResult(story_id=story_id, attached=0, candidates=[])
+
+        history = self.client.author_submissions(story.author)
+        self.posts.upsert_many(history)
+        for post in history:
+            self.search.index_title(post)
+
+        known = set(self.stories.part_post_ids(story_id))
+        target_key = series_key(story.author, story.title.lower())
+
+        attached = 0
+        candidates: list[DetectionMatch] = []
+
+        for match in group_posts(
+            history, self.settings.subreddits, window_hours=self.settings.dedupe_window_hours
+        ):
+            if series_key(match.author, match.base_title) != target_key:
+                continue
+            if match.volume != story.volume:
+                continue
+            new_ids = [pid for pid in match.post_ids if pid not in known]
+            if not new_ids:
+                continue
+            match.post_ids = new_ids
+            match.existing_story_id = story_id
+
+            decision = decide_attachment(match, story, self.settings.attach_threshold)
+            if decision.action == "auto_attach":
+                attached += self.attach_parts(story_id, match)
+            else:
+                candidates.append(match)
+
+        if attached and story.exported_markdown_path:
+            self.export_story(story_id)
+
+        logger.info(
+            "check_for_updates: story=%d +%d parts, %d candidates",
+            story_id,
+            attached,
+            len(candidates),
+        )
+        return UpdateResult(story_id=story_id, attached=attached, candidates=candidates)
+
+    def check_all_for_updates(self) -> list[UpdateResult]:
+        """Check every tracked, non-complete story for new installments.
+
+        One author lookup failing (rate limit, suspended account, ...) must
+        not stop the rest of the tracked library from being checked.
+        """
+        results: list[UpdateResult] = []
+        for story in self.stories.all_stories():
+            if not story.tracked or self.story_status(story) == StoryStatus.COMPLETE:
+                continue
+            try:
+                results.append(self.check_for_updates(story.id))
+            except RedditError as exc:
+                logger.warning("check_for_updates: story=%d failed: %s", story.id, exc)
+        return results
+
+    # ---- preview ------------------------------------------------------------
+
+    def preview_body(self, post_id: str) -> PostBody | None:
+        """Fetch a post's body for preview, caching it like `track` does for a story.
+
+        Safe to call for a post no story has claimed yet — an orphaned cached
+        body is swept up by `prune_orphans` (cascading into `post_body`) if it
+        never ends up attached to anything.
+        """
+        body = self.posts.get_body(post_id)
+        if body is not None:
+            return body
+        self._cache_body(post_id)
+        return self.posts.get_body(post_id)
 
     # ---- reading state ----------------------------------------------------------
 

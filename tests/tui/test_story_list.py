@@ -1,8 +1,10 @@
 from decimal import Decimal
 
 import pytest
+from textual.widgets import Static
 
-from reddit_reader.service import ReaderService
+from reddit_reader.reddit_client import RedditFetchError
+from reddit_reader.service import ReaderService, UpdateResult
 from reddit_reader.tui.app import RedditReaderApp
 from reddit_reader.tui.screens.story_list import StoryListScreen, format_gap_cell
 
@@ -134,3 +136,44 @@ def test_gap_cell_truncates_long_gap_lists() -> None:
 
 def test_gap_cell_is_a_dash_when_there_are_no_gaps() -> None:
     assert format_gap_cell([]) == "-"
+
+
+# --- Checking every tracked story for new installments -----------------------
+
+
+@pytest.mark.asyncio
+async def test_pressing_u_checks_for_updates_and_reports_the_status(
+    populated: ReaderService,
+) -> None:
+    stories = populated.stories.all_stories()
+    populated.track(stories[0].id)
+
+    app = RedditReaderApp(populated)
+    async with app.run_test() as pilot:
+        screen = app.screen
+        assert isinstance(screen, StoryListScreen)
+        await pilot.press("u")
+        await pilot.pause()
+
+        status_text = str(screen.query_one("#status", Static).content)
+        assert "checked" in status_text.lower()
+
+
+@pytest.mark.asyncio
+async def test_check_updates_shows_a_status_message_instead_of_crashing(
+    populated: ReaderService,
+) -> None:
+    def _boom() -> list[UpdateResult]:
+        raise RedditFetchError("rate limited")
+
+    app = RedditReaderApp(populated)
+    async with app.run_test() as pilot:
+        screen = app.screen
+        assert isinstance(screen, StoryListScreen)
+        screen.service.check_all_for_updates = _boom  # type: ignore[method-assign]
+
+        screen.action_check_updates()
+        await pilot.pause()
+
+        status_text = str(screen.query_one("#status", Static).content)
+        assert "failed" in status_text.lower()

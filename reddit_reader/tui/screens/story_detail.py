@@ -14,7 +14,7 @@ from textual.widgets import DataTable, Footer, Header, Static
 from reddit_reader.models import CleaningRule
 from reddit_reader.ordering import format_part_number
 from reddit_reader.reddit_client import RedditError
-from reddit_reader.service import ReaderService
+from reddit_reader.service import ReaderService, UpdateResult
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +32,7 @@ class StoryDetailScreen(Screen[None]):
         ("t", "track", "Track"),
         ("u", "untrack", "Untrack"),
         ("f", "find_missing", "Find missing"),
+        ("n", "check_updates", "Check for new parts"),
         ("e", "export", "Export"),
         ("l", "export_links", "Export links"),
         ("c", "propose_cleaning", "Detect boilerplate"),
@@ -99,6 +100,9 @@ class StoryDetailScreen(Screen[None]):
 
     def do_untrack(self) -> int:
         return self.service.untrack(self.story_id)
+
+    def do_check_updates(self) -> UpdateResult:
+        return self.service.check_for_updates(self.story_id)
 
     def do_export(self) -> Path:
         return self.service.export_story(self.story_id)
@@ -196,6 +200,27 @@ class StoryDetailScreen(Screen[None]):
             from reddit_reader.tui.screens.curation import CurationScreen
 
             self.app.push_screen(CurationScreen(self.service, matches))
+
+    def action_check_updates(self) -> None:
+        story = self.service.stories.get(self.story_id)
+        if story is None or not story.tracked:
+            self._status("Track this story first (t) before checking for new parts.")
+            return
+        try:
+            result = self.do_check_updates()
+        except RedditError as exc:
+            logger.warning("check updates failed: %s", exc)
+            self._status(f"Check for new parts failed: {exc}")
+            return
+        self._status(
+            f"Attached {result.attached} new parts. "
+            f"{len(result.candidates)} candidates awaiting curation."
+        )
+        self.refresh_view()
+        if result.candidates:
+            from reddit_reader.tui.screens.curation import CurationScreen
+
+            self.app.push_screen(CurationScreen(self.service, result.candidates))
 
     def action_export(self) -> None:
         self._status(f"Wrote {self.do_export()}")

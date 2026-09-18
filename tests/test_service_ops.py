@@ -5,7 +5,7 @@ import pytest
 
 from reddit_reader.config import Settings
 from reddit_reader.models import DetectionMatch
-from reddit_reader.reddit_client import RedditClient
+from reddit_reader.reddit_client import RedditClient, RedditFetchError
 from reddit_reader.service import ReaderService
 from reddit_reader.storage import PostRepository, SearchIndex, StoryRepository, connect
 from tests.fakes import FakeReddit, make_submission
@@ -320,3 +320,190 @@ def test_learned_rule_survives_a_leading_nav_line(tmp_path: Path) -> None:
 
     assert "Blue Fishcake production" not in cleaned
     assert "unique to chapter 1" in cleaned
+
+
+# --- check_for_updates / check_all_for_updates --------------------------------
+
+
+def test_check_for_updates_attaches_a_new_part_from_author_history(tmp_path: Path) -> None:
+    service = build(tmp_path, make_submission("a1", "Road - Part 1", created_days=0))
+    story_id = service.commit_match(service.fetch().candidates[0])
+    service.track(story_id)
+
+    service.client._reddit.submissions.append(  # type: ignore[attr-defined]
+        make_submission("a2", "Road - Part 2", created_days=7)
+    )
+    result = service.check_for_updates(story_id)
+
+    assert result.attached == 1
+    assert "a2" in service.stories.part_post_ids(story_id)
+
+
+def test_check_for_updates_caches_the_new_part_body(tmp_path: Path) -> None:
+    """The new part is on a tracked story, so it should be cached immediately,
+    the same as any other auto-attach."""
+    service = build(tmp_path, make_submission("a1", "Road - Part 1", created_days=0))
+    story_id = service.commit_match(service.fetch().candidates[0])
+    service.track(story_id)
+
+    service.client._reddit.submissions.append(  # type: ignore[attr-defined]
+        make_submission("a2", "Road - Part 2", created_days=7)
+    )
+    service.check_for_updates(story_id)
+
+    assert service.posts.get_body("a2") is not None
+
+
+def test_check_for_updates_does_nothing_for_an_untracked_story(tmp_path: Path) -> None:
+    service = build(tmp_path, make_submission("a1", "Road - Part 1", created_days=0))
+    story_id = service.commit_match(service.fetch().candidates[0])
+
+    service.client._reddit.submissions.append(  # type: ignore[attr-defined]
+        make_submission("a2", "Road - Part 2", created_days=7)
+    )
+    result = service.check_for_updates(story_id)
+
+    assert result.attached == 0
+    assert "a2" not in service.stories.part_post_ids(story_id)
+
+
+def test_check_for_updates_ignores_a_different_series_by_the_same_author(tmp_path: Path) -> None:
+    service = build(tmp_path, make_submission("a1", "Road - Part 1", created_days=0))
+    story_id = service.commit_match(service.fetch().candidates[0])
+    service.track(story_id)
+
+    service.client._reddit.submissions.append(  # type: ignore[attr-defined]
+        make_submission("z1", "A Different Story - Part 1", created_days=7)
+    )
+    result = service.check_for_updates(story_id)
+
+    assert result.attached == 0
+    assert service.stories.parts(story_id).__len__() == 1
+
+
+def test_check_for_updates_reexports_a_previously_exported_story(tmp_path: Path) -> None:
+    service = build(tmp_path, make_submission("a1", "Road - Part 1", created_days=0))
+    story_id = service.commit_match(service.fetch().candidates[0])
+    service.track(story_id)
+    path = service.export_story(story_id)
+    before = path.read_text()
+
+    service.client._reddit.submissions.append(  # type: ignore[attr-defined]
+        make_submission("a2", "Road - Part 2", created_days=7)
+    )
+    service.check_for_updates(story_id)
+
+    after = path.read_text()
+    assert after != before
+    assert "Part 2" in after
+
+
+def test_check_for_updates_skips_reexport_when_nothing_new_attached(tmp_path: Path) -> None:
+    service = build(tmp_path, make_submission("a1", "Road - Part 1", created_days=0))
+    story_id = service.commit_match(service.fetch().candidates[0])
+    service.track(story_id)
+    service.export_story(story_id)
+    story = service.stories.get(story_id)
+    assert story is not None
+    exported_at = story.exported_at
+
+    service.check_for_updates(story_id)
+
+    story = service.stories.get(story_id)
+    assert story is not None
+    assert story.exported_at == exported_at
+
+
+def test_check_all_for_updates_only_checks_tracked_stories(tmp_path: Path) -> None:
+    service = build(
+        tmp_path,
+        make_submission("a1", "Road - Part 1", created_days=0),
+        make_submission("b1", "Other Tale - Part 1", created_days=0),
+    )
+    results = service.fetch()
+    tracked_id = service.commit_match(next(m for m in results.candidates if "a1" in m.post_ids))
+    service.commit_match(next(m for m in results.candidates if "b1" in m.post_ids))
+    service.track(tracked_id)
+
+    updates = service.check_all_for_updates()
+
+    assert [r.story_id for r in updates] == [tracked_id]
+
+
+def test_check_all_for_updates_skips_complete_stories(tmp_path: Path) -> None:
+    service = build(
+        tmp_path,
+        make_submission("a1", "Road - Part 1 [Complete]", created_days=0),
+    )
+    story_id = service.commit_match(service.fetch().candidates[0])
+    service.track(story_id)
+
+    assert service.check_all_for_updates() == []
+
+
+def test_check_all_for_updates_survives_one_author_lookup_failing(tmp_path: Path) -> None:
+    service = build(
+        tmp_path,
+        make_submission("a1", "Road - Part 1", created_days=0),
+        make_submission("b1", "Other Tale - Part 1", created_days=0, author_name="OtherAuthor"),
+    )
+    results = service.fetch()
+    first_id = service.commit_match(next(m for m in results.candidates if "a1" in m.post_ids))
+    second_id = service.commit_match(next(m for m in results.candidates if "b1" in m.post_ids))
+    service.track(first_id)
+    service.track(second_id)
+
+    def _boom(author: str, limit: int | None = None) -> list[object]:
+        if author == "BlueFishcake":
+            raise RedditFetchError("rate limited")
+        return []
+
+    service.client.author_submissions = _boom  # type: ignore[method-assign]
+
+    updates = service.check_all_for_updates()
+
+    assert [r.story_id for r in updates] == [second_id]
+
+
+# --- preview_body --------------------------------------------------------------
+
+
+def test_preview_body_fetches_and_caches_an_uncommitted_post(tmp_path: Path) -> None:
+    service = build(tmp_path, make_submission("a1", "Road - Part 1"))
+    service.fetch()
+    assert service.posts.get_body("a1") is None
+
+    body = service.preview_body("a1")
+
+    assert body is not None
+    assert body.selftext == "Story text."
+    assert service.posts.get_body("a1") is not None
+
+
+def test_preview_body_reuses_an_already_cached_body(tmp_path: Path) -> None:
+    from reddit_reader.models import PostBody
+
+    service = build(tmp_path, make_submission("a1", "Road - Part 1"))
+    service.fetch()
+    service.posts.set_body(PostBody(post_id="a1", selftext="Edited cached text."))
+
+    body = service.preview_body("a1")
+
+    assert body is not None
+    assert body.selftext == "Edited cached text."
+
+
+def test_preview_body_is_none_for_a_gone_post(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "t.db")
+    reddit = FakeReddit(
+        submissions=[make_submission("a1", "Road - Part 1")], missing_ids={"a1"}
+    )
+    service = ReaderService(
+        settings=Settings(subreddits=["HFY"], export_dir=tmp_path / "out"),
+        posts=PostRepository(conn),
+        stories=StoryRepository(conn),
+        search=SearchIndex(conn),
+        client=RedditClient(reddit),
+    )
+    service.fetch()
+    assert service.preview_body("a1") is None

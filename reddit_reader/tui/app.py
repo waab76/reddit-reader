@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import ClassVar
 
+from textual import events
 from textual.app import App
 from textual.binding import BindingType
 
@@ -35,6 +36,20 @@ class RedditReaderApp(App[None]):
     def on_mount(self) -> None:
         logger.info("app started")
         self.push_screen(StoryListScreen(self.service))
+
+    def on_key(self, event: events.Key) -> None:
+        """DEBUG-trace every keypress, whichever screen/widget ends up handling it.
+
+        This fires regardless of what (if anything) the key is bound to —
+        Textual resolves bindings across the whole focus chain up in the App,
+        so this handler still sees the key even when a screen or widget deep
+        in that chain consumes it. Paging keys are exempted (see
+        `PAGING_KEYS`): they fire constantly while reading and add noise
+        without diagnostic value.
+        """
+        if event.key in getattr(self.screen, "PAGING_KEYS", frozenset()):
+            return
+        logger.debug("key=%s screen=%s", event.key, type(self.screen).__name__)
 
     async def action_back(self) -> None:
         """Pop to the previous screen, but never past Story List.

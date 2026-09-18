@@ -85,6 +85,28 @@ def fetch(
     )
 
 
+@app.command()
+def update(
+    config: Path | None = typer.Option(None, help="Path to a config file."),  # noqa: B008
+) -> None:
+    """Check every tracked, non-complete story for new installments and attach them."""
+    service = build_service(_settings(config))
+    try:
+        results = service.check_all_for_updates()
+    except RedditError as exc:
+        logger.exception("update command failed")
+        typer.echo(f"Update failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    attached = sum(r.attached for r in results)
+    candidates = sum(len(r.candidates) for r in results)
+    typer.echo(
+        f"Checked {len(results)} tracked stories. "
+        f"Attached {attached} new parts. "
+        f"{candidates} candidates awaiting curation."
+    )
+
+
 @app.command("list")
 def list_stories(
     config: Path | None = typer.Option(None, help="Path to a config file."),  # noqa: B008

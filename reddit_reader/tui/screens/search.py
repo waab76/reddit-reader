@@ -26,6 +26,7 @@ class SearchScreen(Screen[None]):
         ("enter", "search_local", "Search cache"),
         ("ctrl+r", "search_live", "Search Reddit"),
         ("o", "open_selected", "Open"),
+        ("p", "preview", "Preview"),
         ("escape", "app.back", "Back"),
     ]
 
@@ -108,6 +109,14 @@ class SearchScreen(Screen[None]):
         post_id = self._selected_post_id()
         if post_id is not None:
             self.open_for_post(post_id)
+
+    def action_preview(self) -> None:
+        post_id = self._selected_post_id()
+        if post_id is None:
+            return
+        from reddit_reader.tui.screens.preview import PreviewScreen
+
+        self.app.push_screen(PreviewScreen(self.service, post_id))
 
     def action_open_selected(self) -> None:
         """Explicit fallback for `o`: some terminals never deliver a DataTable's

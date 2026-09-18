@@ -14,10 +14,13 @@ from reddit_reader.cleaning import clean
 from reddit_reader.ordering import format_part_number
 from reddit_reader.service import ReaderService
 from reddit_reader.tui.markdown import to_display_markdown
+from reddit_reader.tui.screens import PAGING_KEYS
 
 
 class ReaderScreen(Screen[None]):
     """One part at a time, resuming from the saved position."""
+
+    PAGING_KEYS = PAGING_KEYS
 
     BINDINGS: ClassVar[list[BindingType]] = [
         ("n", "next", "Next part"),
