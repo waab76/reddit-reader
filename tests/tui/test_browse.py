@@ -64,3 +64,65 @@ def test_browse_still_shows_a_grouped_post_that_also_has_orphaned_mirrors(
     assert "dup1" not in ids
     assert "dup2" not in ids
     assert "dup3" not in ids
+
+
+def _service_with_mixed_posts(tmp_path: Path) -> ReaderService:
+    conn = connect(tmp_path / "t.db")
+    reddit = FakeReddit(
+        submissions=[
+            make_submission("p1", "Charlie's Tale", author_name="zeta", subreddit_name="HFY"),
+            make_submission("p2", "Alpha's Tale", author_name="alpha", subreddit_name="mirror"),
+            make_submission("p3", "Bravo's Tale", author_name="mu", subreddit_name="HFY"),
+        ]
+    )
+    return ReaderService(
+        settings=Settings(subreddits=["HFY", "mirror"], export_dir=tmp_path / "out"),
+        posts=PostRepository(conn),
+        stories=StoryRepository(conn),
+        search=SearchIndex(conn),
+        client=RedditClient(reddit),
+    )
+
+
+def test_sort_by_author(tmp_path: Path) -> None:
+    service = _service_with_mixed_posts(tmp_path)
+    service.fetch()
+
+    screen = BrowseScreen(service)
+    screen.set_sort("author")
+    authors = [row[0] for row in screen.rows()]
+
+    assert authors == sorted(authors)
+
+
+def test_sort_by_title_reversed(tmp_path: Path) -> None:
+    service = _service_with_mixed_posts(tmp_path)
+    service.fetch()
+
+    screen = BrowseScreen(service)
+    screen.set_sort("title", reverse=True)
+    titles = [row[2] for row in screen.rows()]
+
+    assert titles == sorted(titles, reverse=True)
+
+
+def test_set_sort_ignores_unknown_key(tmp_path: Path) -> None:
+    """Guards against a typo silently landing the screen on a bogus sort."""
+    service = _service_with_mixed_posts(tmp_path)
+    service.fetch()
+
+    screen = BrowseScreen(service)
+    screen.set_sort("bogus")
+
+    assert screen._sort == "none"
+
+
+def test_reverse_sort_flag(tmp_path: Path) -> None:
+    service = _service_with_mixed_posts(tmp_path)
+    service.fetch()
+
+    screen = BrowseScreen(service)
+    screen.set_sort("author", reverse=True)
+    authors = [row[0] for row in screen.rows()]
+
+    assert authors == sorted(authors, reverse=True)

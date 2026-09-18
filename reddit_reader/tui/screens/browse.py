@@ -16,9 +16,18 @@ from reddit_reader.models import PostMeta
 from reddit_reader.reddit_client import RedditError
 from reddit_reader.service import FetchResult, ReaderService
 from reddit_reader.tui.navigation import open_post
-from reddit_reader.tui.screens import TITLE_COLUMN_WIDTH
+from reddit_reader.tui.screens import PAGING_KEYS, TITLE_COLUMN_WIDTH
 
 LISTINGS = ("new", "hot", "top")
+
+# "none" keeps the natural fetch/grouping order (orphans first, then grouped
+# posts); the rest sort by that column of the visible row tuple, see
+# `_ROW_SORT_COLUMNS`.
+SORT_KEYS = ("none", "author", "subreddit", "title")
+
+# Index into the (author, subreddit, title, grouped?) row tuple for each sort
+# key that isn't "none".
+_ROW_SORT_COLUMNS = {"author": 0, "subreddit": 1, "title": 2}
 
 logger = logging.getLogger(__name__)
 
@@ -26,11 +35,19 @@ logger = logging.getLogger(__name__)
 class BrowseScreen(Screen[None]):
     """Fetch and inspect raw posts before they become stories."""
 
+    PAGING_KEYS = PAGING_KEYS
+
     BINDINGS: ClassVar[list[BindingType]] = [
         ("f", "fetch", "Fetch"),
         ("l", "cycle_listing", "Listing type"),
         ("o", "open_selected", "Open"),
         ("p", "preview", "Preview"),
+        ("s", "cycle_sort", "Sort"),
+        ("S", "reverse_sort", "Reverse sort"),
+        ("space", "page_down", "Page down"),
+        ("b", "page_up", "Page up"),
+        ("g", "scroll_top", "Top"),
+        ("G", "scroll_bottom", "Bottom"),
         ("escape", "app.back", "Back"),
     ]
 
@@ -39,6 +56,8 @@ class BrowseScreen(Screen[None]):
         self.service = service
         self._subreddit_filter: str | None = None
         self._last_result: FetchResult | None = None
+        self._sort: str = "none"
+        self._sort_reverse = False
 
     # ---- data -------------------------------------------------------------------
 
@@ -48,6 +67,11 @@ class BrowseScreen(Screen[None]):
 
     def set_subreddit_filter(self, subreddit: str | None) -> None:
         self._subreddit_filter = subreddit
+
+    def set_sort(self, key: str, *, reverse: bool = False) -> None:
+        if key in SORT_KEYS:
+            self._sort = key
+            self._sort_reverse = reverse
 
     def do_fetch(self) -> FetchResult:
         self._last_result = self.service.fetch()
@@ -106,7 +130,17 @@ class BrowseScreen(Screen[None]):
                     ),
                 )
             )
-        return entries
+        return self._sorted_entries(entries)
+
+    def _sorted_entries(
+        self, entries: list[tuple[str, tuple[str, str, str, str]]]
+    ) -> list[tuple[str, tuple[str, str, str, str]]]:
+        if self._sort == "none":
+            return entries
+        column = _ROW_SORT_COLUMNS[self._sort]
+        return sorted(
+            entries, key=lambda entry: entry[1][column].lower(), reverse=self._sort_reverse
+        )
 
     def rows(self) -> list[tuple[str, str, str, str]]:
         """(author, subreddit, title, grouped?) for every cached post."""
@@ -143,7 +177,14 @@ class BrowseScreen(Screen[None]):
             table.add_row(*row, key=post_id)
         self.query_one("#status", Static).update(
             f"listing: {self.service.settings.listing} — {len(entries)} posts cached"
+            f" — sort: {self._sort_label()}"
         )
+
+    def _sort_label(self) -> str:
+        if self._sort == "none":
+            return "none"
+        arrow = "↓" if self._sort_reverse else "↑"
+        return f"{self._sort} {arrow}"
 
     def action_fetch(self) -> None:
         try:
@@ -166,6 +207,27 @@ class BrowseScreen(Screen[None]):
         current = LISTINGS.index(self.service.settings.listing)
         self.set_listing(LISTINGS[(current + 1) % len(LISTINGS)])
         self.refresh_rows()
+
+    def action_cycle_sort(self) -> None:
+        current = SORT_KEYS.index(self._sort)
+        self._sort = SORT_KEYS[(current + 1) % len(SORT_KEYS)]
+        self.refresh_rows()
+
+    def action_reverse_sort(self) -> None:
+        self._sort_reverse = not self._sort_reverse
+        self.refresh_rows()
+
+    def action_page_down(self) -> None:
+        self.query_one("#posts", DataTable).action_page_down()
+
+    def action_page_up(self) -> None:
+        self.query_one("#posts", DataTable).action_page_up()
+
+    def action_scroll_top(self) -> None:
+        self.query_one("#posts", DataTable).action_scroll_top()
+
+    def action_scroll_bottom(self) -> None:
+        self.query_one("#posts", DataTable).action_scroll_bottom()
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         post_id = self._selected_post_id()

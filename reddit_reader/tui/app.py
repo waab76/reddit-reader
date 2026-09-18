@@ -21,7 +21,11 @@ class RedditReaderApp(App[None]):
     CSS = """
     Screen { layout: vertical; }
     DataTable { height: 1fr; }
-    #status { dock: bottom; height: 1; background: $panel; color: $text-muted; }
+    /* Not docked: Footer already docks bottom, and a second dock to the same
+       edge lands #status in that exact region too, so Footer just paints
+       over it. Left in normal flow, #status settles directly above Footer
+       instead (the docked Footer's space is excluded from the flow). */
+    #status { height: 1; background: $panel; color: $text-muted; }
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
