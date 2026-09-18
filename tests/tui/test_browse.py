@@ -70,9 +70,15 @@ def _service_with_mixed_posts(tmp_path: Path) -> ReaderService:
     conn = connect(tmp_path / "t.db")
     reddit = FakeReddit(
         submissions=[
-            make_submission("p1", "Charlie's Tale", author_name="zeta", subreddit_name="HFY"),
-            make_submission("p2", "Alpha's Tale", author_name="alpha", subreddit_name="mirror"),
-            make_submission("p3", "Bravo's Tale", author_name="mu", subreddit_name="HFY"),
+            make_submission(
+                "p1", "Charlie's Tale", author_name="zeta", subreddit_name="HFY", created_days=2
+            ),
+            make_submission(
+                "p2", "Alpha's Tale", author_name="alpha", subreddit_name="mirror", created_days=0
+            ),
+            make_submission(
+                "p3", "Bravo's Tale", author_name="mu", subreddit_name="HFY", created_days=1
+            ),
         ]
     )
     return ReaderService(
@@ -114,7 +120,17 @@ def test_set_sort_ignores_unknown_key(tmp_path: Path) -> None:
     screen = BrowseScreen(service)
     screen.set_sort("bogus")
 
-    assert screen._sort == "none"
+    assert screen._sort == "date"
+
+
+def test_default_sort_is_newest_first(tmp_path: Path) -> None:
+    service = _service_with_mixed_posts(tmp_path)
+    service.fetch()
+
+    screen = BrowseScreen(service)
+    dates = [row[5] for row in screen.rows()]
+
+    assert dates == sorted(dates, reverse=True)
 
 
 def test_reverse_sort_flag(tmp_path: Path) -> None:
@@ -126,3 +142,51 @@ def test_reverse_sort_flag(tmp_path: Path) -> None:
     authors = [row[0] for row in screen.rows()]
 
     assert authors == sorted(authors, reverse=True)
+
+
+def test_sort_by_date(tmp_path: Path) -> None:
+    service = _service_with_mixed_posts(tmp_path)
+    service.fetch()
+
+    screen = BrowseScreen(service)
+    screen.set_sort("date")
+    dates = [row[5] for row in screen.rows()]
+
+    assert dates == sorted(dates)
+
+
+def test_sort_by_date_reversed(tmp_path: Path) -> None:
+    service = _service_with_mixed_posts(tmp_path)
+    service.fetch()
+
+    screen = BrowseScreen(service)
+    screen.set_sort("date", reverse=True)
+    dates = [row[5] for row in screen.rows()]
+
+    assert dates == sorted(dates, reverse=True)
+
+
+def test_tagged_column_reflects_manual_tagging(tmp_path: Path) -> None:
+    service = _service_with_mixed_posts(tmp_path)
+    service.fetch()
+
+    screen = BrowseScreen(service)
+    screen._tagged["p2"] = None
+    entries = dict(screen._visible_entries())
+
+    assert entries["p2"][4] == "yes"
+    assert entries["p1"][4] == "no"
+
+
+def test_commit_tagged_groups_posts_and_clears_tags(tmp_path: Path) -> None:
+    service = _service_with_mixed_posts(tmp_path)
+    service.fetch()
+
+    screen = BrowseScreen(service)
+    screen._tagged["p1"] = None
+    screen._tagged["p2"] = None
+    story_id = service.tag_group(list(screen._tagged))
+    screen._tagged.clear()
+
+    assert set(service.stories.part_post_ids(story_id)) == {"p1", "p2"}
+    assert screen._tagged == {}

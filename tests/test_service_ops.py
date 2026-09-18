@@ -507,3 +507,55 @@ def test_preview_body_is_none_for_a_gone_post(tmp_path: Path) -> None:
     )
     service.fetch()
     assert service.preview_body("a1") is None
+
+
+def test_tag_group_commits_a_new_story_from_unrelated_posts(tmp_path: Path) -> None:
+    """Detection would never cluster these — different authors, different
+    titles — so `tag_group` is the only route to a single story."""
+    service = build(
+        tmp_path,
+        make_submission("a1", "Alpha's Journey", author_name="alpha"),
+        make_submission("b1", "Beta's Journey", author_name="beta"),
+    )
+    service.fetch()
+
+    story_id = service.tag_group(["a1", "b1"])
+
+    assert set(service.stories.part_post_ids(story_id)) == {"a1", "b1"}
+
+
+def test_tag_group_attaches_to_a_story_one_of_the_tagged_posts_already_belongs_to(
+    tmp_path: Path,
+) -> None:
+    service = build(
+        tmp_path,
+        make_submission("a1", "Alpha's Journey", author_name="alpha"),
+        make_submission("b1", "Beta's Journey", author_name="beta"),
+    )
+    existing_story_id = service.commit_match(service.fetch().candidates[0])
+
+    story_id = service.tag_group(["a1", "b1"])
+
+    assert story_id == existing_story_id
+    assert set(service.stories.part_post_ids(story_id)) == {"a1", "b1"}
+
+
+def test_tag_group_refuses_posts_split_across_two_different_stories(tmp_path: Path) -> None:
+    service = build(
+        tmp_path,
+        make_submission("a1", "Alpha's Journey", author_name="alpha"),
+        make_submission("b1", "Beta's Journey", author_name="beta"),
+    )
+    for match in service.fetch().candidates:
+        service.commit_match(match)
+
+    with pytest.raises(ValueError, match="different stories"):
+        service.tag_group(["a1", "b1"])
+
+
+def test_tag_group_refuses_fewer_than_two_known_posts(tmp_path: Path) -> None:
+    service = build(tmp_path, make_submission("a1", "Alpha's Journey", author_name="alpha"))
+    service.fetch()
+
+    with pytest.raises(ValueError, match="at least two"):
+        service.tag_group(["a1", "does-not-exist"])

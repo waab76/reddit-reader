@@ -23,11 +23,13 @@ LISTINGS = ("new", "hot", "top")
 # "none" keeps the natural fetch/grouping order (orphans first, then grouped
 # posts); the rest sort by that column of the visible row tuple, see
 # `_ROW_SORT_COLUMNS`.
-SORT_KEYS = ("none", "author", "subreddit", "title")
+SORT_KEYS = ("none", "author", "subreddit", "title", "date")
 
-# Index into the (author, subreddit, title, grouped?) row tuple for each sort
-# key that isn't "none".
-_ROW_SORT_COLUMNS = {"author": 0, "subreddit": 1, "title": 2}
+# Index into the (author, subreddit, title, grouped?, tagged?, date) row tuple
+# for each sort key that isn't "none". Dates are stored ISO-formatted, so
+# lexicographic order (what `_sorted_entries` does for every column) is
+# already chronological order.
+_ROW_SORT_COLUMNS = {"author": 0, "subreddit": 1, "title": 2, "date": 5}
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +46,8 @@ class BrowseScreen(Screen[None]):
         ("p", "preview", "Preview"),
         ("s", "cycle_sort", "Sort"),
         ("S", "reverse_sort", "Reverse sort"),
+        ("t", "toggle_tag", "Tag"),
+        ("c", "commit_tagged", "Group tagged"),
         ("space", "page_down", "Page down"),
         ("b", "page_up", "Page up"),
         ("g", "scroll_top", "Top"),
@@ -56,8 +60,13 @@ class BrowseScreen(Screen[None]):
         self.service = service
         self._subreddit_filter: str | None = None
         self._last_result: FetchResult | None = None
-        self._sort: str = "none"
-        self._sort_reverse = False
+        self._sort: str = "date"
+        self._sort_reverse = True
+        # An insertion-ordered set: tag order becomes the anchor-selection
+        # order in `ReaderService.tag_group` when none of the tagged posts
+        # already belongs to a story, so plain `set` (arbitrary order) would
+        # make which post's title/author wins the new story nondeterministic.
+        self._tagged: dict[str, None] = {}
 
     # ---- data -------------------------------------------------------------------
 
@@ -95,8 +104,8 @@ class BrowseScreen(Screen[None]):
             duplicate_ids.update(alt.id for group in groups for alt in group.alternates)
         return duplicate_ids
 
-    def _visible_entries(self) -> list[tuple[str, tuple[str, str, str, str]]]:
-        """(post_id, (author, subreddit, title, grouped?)) for every cached post."""
+    def _visible_entries(self) -> list[tuple[str, tuple[str, str, str, str, str, str]]]:
+        """(post_id, (author, subreddit, title, grouped?, tagged?, date)) for every cached post."""
         grouped = {
             post_id
             for story in self.service.stories.all_stories()
@@ -110,7 +119,7 @@ class BrowseScreen(Screen[None]):
         }
         duplicate_ids = self._duplicate_ids(orphan_metas.values())
 
-        entries: list[tuple[str, tuple[str, str, str, str]]] = []
+        entries: list[tuple[str, tuple[str, str, str, str, str, str]]] = []
         for post_id in orphan_ids + sorted(grouped):
             if post_id in duplicate_ids and post_id not in grouped:
                 continue
@@ -127,14 +136,16 @@ class BrowseScreen(Screen[None]):
                         meta.subreddit,
                         meta.title,
                         "yes" if meta.id in grouped else "no",
+                        "yes" if meta.id in self._tagged else "no",
+                        meta.created_utc.date().isoformat(),
                     ),
                 )
             )
         return self._sorted_entries(entries)
 
     def _sorted_entries(
-        self, entries: list[tuple[str, tuple[str, str, str, str]]]
-    ) -> list[tuple[str, tuple[str, str, str, str]]]:
+        self, entries: list[tuple[str, tuple[str, str, str, str, str, str]]]
+    ) -> list[tuple[str, tuple[str, str, str, str, str, str]]]:
         if self._sort == "none":
             return entries
         column = _ROW_SORT_COLUMNS[self._sort]
@@ -142,8 +153,8 @@ class BrowseScreen(Screen[None]):
             entries, key=lambda entry: entry[1][column].lower(), reverse=self._sort_reverse
         )
 
-    def rows(self) -> list[tuple[str, str, str, str]]:
-        """(author, subreddit, title, grouped?) for every cached post."""
+    def rows(self) -> list[tuple[str, str, str, str, str, str]]:
+        """(author, subreddit, title, grouped?, tagged?, date) for every cached post."""
         return [row for _, row in self._visible_entries()]
 
     def _selected_post_id(self) -> str | None:
@@ -167,18 +178,33 @@ class BrowseScreen(Screen[None]):
         # Capped so a runaway-long title can't push Author/Subreddit off screen.
         table.add_column("Title", width=TITLE_COLUMN_WIDTH)
         table.add_column("Grouped")
+        table.add_column("Tagged")
+        table.add_column("Date")
         self.refresh_rows()
 
     def refresh_rows(self) -> None:
         table = self.query_one("#posts", DataTable)
+        # Rebuilding the table resets the cursor to row 0, which would make
+        # tagging several rows in a row (select, `t`, select next, `t`, ...)
+        # unusable — every tag would bounce the cursor back to the top.
+        # Re-find the previously highlighted post afterwards instead.
+        previous = self._selected_post_id() if table.row_count else None
         table.clear()
         entries = self._visible_entries()
         for post_id, row in entries:
             table.add_row(*row, key=post_id)
-        self.query_one("#status", Static).update(
+        if previous is not None:
+            for index, (post_id, _) in enumerate(entries):
+                if post_id == previous:
+                    table.move_cursor(row=index)
+                    break
+        self._set_status(
             f"listing: {self.service.settings.listing} — {len(entries)} posts cached"
-            f" — sort: {self._sort_label()}"
+            f" — sort: {self._sort_label()} — tagged: {len(self._tagged)}"
         )
+
+    def _set_status(self, message: str) -> None:
+        self.query_one("#status", Static).update(message)
 
     def _sort_label(self) -> str:
         if self._sort == "none":
@@ -228,6 +254,29 @@ class BrowseScreen(Screen[None]):
 
     def action_scroll_bottom(self) -> None:
         self.query_one("#posts", DataTable).action_scroll_bottom()
+
+    def action_toggle_tag(self) -> None:
+        post_id = self._selected_post_id()
+        if post_id is None:
+            return
+        if post_id in self._tagged:
+            del self._tagged[post_id]
+        else:
+            self._tagged[post_id] = None
+        self.refresh_rows()
+
+    def action_commit_tagged(self) -> None:
+        if len(self._tagged) < 2:
+            self._set_status("Tag at least two posts before grouping.")
+            return
+        try:
+            story_id = self.service.tag_group(list(self._tagged))
+        except ValueError as exc:
+            self._set_status(str(exc))
+            return
+        self._tagged.clear()
+        self.refresh_rows()
+        self._set_status(f"Tagged posts grouped into story {story_id}.")
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         post_id = self._selected_post_id()

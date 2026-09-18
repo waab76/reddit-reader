@@ -235,6 +235,55 @@ class ReaderService:
         )
         return story_id
 
+    def tag_group(self, post_ids: Sequence[str]) -> int:
+        """Group hand-picked posts detection missed, mirroring `commit_match`.
+
+        Builds a synthetic `DetectionMatch` from the tagged ids and routes it
+        through the same `attach_parts`/`commit_match` machinery as an
+        auto-detected one, so ordering, tracking, and export all behave
+        identically regardless of how the grouping was found. If the tagged
+        set already touches more than one committed story, refuses rather
+        than guessing which one should absorb the rest.
+        """
+        unique_ids = list(dict.fromkeys(post_ids))
+        metas = {m.id: m for m in self.posts.get_many(unique_ids)}
+        ordered_ids = [pid for pid in unique_ids if pid in metas]
+        if len(ordered_ids) < 2:
+            raise ValueError("Need at least two known posts to group.")
+
+        tagged = set(ordered_ids)
+        story_ids = {
+            story.id
+            for story in self.stories.all_stories()
+            if tagged & set(self.stories.part_post_ids(story.id))
+        }
+        if len(story_ids) > 1:
+            raise ValueError("Tagged posts already belong to different stories.")
+
+        anchor_id = ordered_ids[0]
+        if story_ids:
+            (story_id,) = story_ids
+            in_story = set(self.stories.part_post_ids(story_id))
+            anchor_id = next((pid for pid in ordered_ids if pid in in_story), anchor_id)
+
+        anchor = metas[anchor_id]
+        parsed = parse_title(anchor.title)
+        match = DetectionMatch(
+            base_title=parsed.base_title,
+            display_title=parsed.display_title,
+            author=anchor.author,
+            volume=parsed.volume,
+            post_ids=ordered_ids,
+            confidence=1.0,
+            reasons=["tagged by hand"],
+        )
+
+        if story_ids:
+            (story_id,) = story_ids
+            self.attach_parts(story_id, match)
+            return story_id
+        return self.commit_match(match)
+
     # ---- tracking ---------------------------------------------------------------
 
     def _cache_body(self, post_id: str) -> None:
